@@ -1,0 +1,22 @@
+{
+  "name": "snps-signal",
+  "version": "0.2.0",
+  "description": "Signalling and game directory for snps",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "snps-signal": "src/main.js"
+  },
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/main.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "ws": "^8.22.0"
+  }
+}

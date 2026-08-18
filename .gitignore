@@ -1,0 +1,34 @@
+# Reference sources, fetched by tools/fetch-references.sh — never committed
+/third_party/
+
+# Build
+/build/
+/out/
+/install/
+CMakeUserPresets.json
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.ncb
+*.opt
+*.aps
+
+# Node (the signalling server's packages; `npm ci` in server/)
+node_modules/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# Build products
+*.obj
+*.o
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.dll
+*.snp
