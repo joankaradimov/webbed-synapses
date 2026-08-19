@@ -8,7 +8,7 @@
 
 import { MAX_FRAME_BYTES } from '../src/protocol.js';
 
-class Client {
+export class Client {
   constructor(socket, label) {
     this.socket = socket;
     this.label = label;
@@ -69,6 +69,8 @@ export async function smoke(url, check) {
     const welcome = await a.hello();
     check(welcome.peer.length === 32, 'welcome carries a 128-bit peer id');
     check(Array.isArray(welcome.ice), 'welcome carries ICE config');
+    check(typeof welcome.resume === 'string' && welcome.resume.startsWith(`${welcome.peer}.`),
+          'welcome carries a resume token for that id');
     await b.hello();
     check(a.id !== b.id, 'peers get distinct ids');
 
@@ -133,6 +135,15 @@ export async function smoke(url, check) {
     check(answer.from === master.id && answer.data === 'YW5zd2Vy', 'a relay carries the answer back');
     asker.close();
     master.close();
+
+    const leaving = await Client.open(url, 'returning');
+    const first = await leaving.hello();
+    leaving.close();
+    await leaving.closed;
+    const returning = await Client.open(url, 'returning');
+    const again = await returning.hello('SEXP', 1, { resume: first.resume });
+    check(again.peer === first.peer, 'the token brings the same id back on a new connection');
+    returning.close();
 
     a.close();
     const gone = await b.recv('game_closed');

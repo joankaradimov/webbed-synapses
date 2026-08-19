@@ -32,6 +32,10 @@ export const MULTICASTS_PER_SECOND = 4;
 
 export const PEER_ID_BYTES = 16; // == sizeof(SNETADDR) == endpoint::addr
 
+// An advert's nonce is only ever hashed into the room id (rooms.js), so any
+// text will do; this only bounds it.
+export const MAX_NONCE_CHARS = 64;
+
 // Battle.net product codes are four characters; we do not interpret them, we
 // only refuse to let two different games see each other's rooms.
 const PRODUCT_RE = /^[A-Za-z0-9]{4}$/;

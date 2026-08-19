@@ -18,15 +18,18 @@ log.quiet(); // refusals are the point of several tests; their warnings are nois
 class FakeSocket {
   constructor(server) {
     this.sent = [];
-    this.closedByServer = false;
+    this.closedByServer = false; // the close code, once the server closes it
     this.connection = server.open(this);
   }
 
   send(text) { this.sent.push(JSON.parse(text)); }
-  close() { this.closedByServer = true; }
+  close(code) { this.closedByServer = code ?? true; }
 
   say(message) { this.connection.message(JSON.stringify(message)); }
-  hangUp() { this.connection.closed(); }
+  /** The client closes the connection, with a close frame: it has left. */
+  leave() { this.connection.closed(1000); }
+  /** The connection ends with no close frame: the network, or a crash. */
+  drop() { this.connection.closed(1006); }
 
   last(type) {
     for (let i = this.sent.length - 1; i >= 0; --i)
@@ -35,23 +38,30 @@ class FakeSocket {
     return null;
   }
 
+  count(type) { return this.sent.filter(message => message.type === type).length; }
+
   get id() { return this.last('welcome').peer; }
+  get resume() { return this.last('welcome').resume; }
 }
+
+const ice = new IceConfig({
+  stunUrls: ['stun:stun.example.org:3478'],
+  turnUrls: ['turn:relay.example.org:3478'],
+  turnSecret: 's3cret',
+});
 
 let server;
 beforeEach(() => {
-  server = new SignalServer(new IceConfig({
-    stunUrls: ['stun:stun.example.org:3478'],
-    turnUrls: ['turn:relay.example.org:3478'],
-    turnSecret: 's3cret',
-  }));
+  server = new SignalServer(ice);
 });
 
-function connect({ product = 'SEXP', version = 1, name = 'player', ...extra } = {}) {
-  const socket = new FakeSocket(server);
+function connect({ product = 'SEXP', version = 1, name = 'player', ...extra } = {}, to = server) {
+  const socket = new FakeSocket(to);
   socket.say({ type: 'hello', product, version, name, ...extra });
   return socket;
 }
+
+const advert = (extra = {}) => ({ type: 'advertise', name: 'game', stat: '', state: 0, max_players: 4, ...extra });
 
 test('hello mints an identity and ICE config', () => {
   const a = connect({ name: 'Joan' });
@@ -207,15 +217,184 @@ test('a frame over the limit is refused and the connection closed', () => {
   assert.ok(loud.closedByServer);
 });
 
-test('losing the host closes the game', () => {
+test('a host that leaves closes the game at once', () => {
   const host = connect();
   const joiner = connect();
-  host.say({ type: 'advertise', name: 'game', stat: '', state: 0, max_players: 4 });
+  host.say(advert());
   const game = host.last('advertised').game;
   joiner.say({ type: 'join', game });
 
-  host.hangUp();
+  host.leave();
 
   assert.equal(joiner.last('game_closed').game, game);
   assert.equal(server.registry.rooms.size, 0);
+});
+
+// -- reconnecting ------------------------------------------------------------
+
+test('welcome carries a resume token, which brings the id back', () => {
+  const first = connect({ name: 'Joan' });
+  assert.match(first.resume, /^[0-9a-f]{32}\.[0-9a-f]{32}$/);
+  assert.ok(first.resume.startsWith(first.id), 'issued for this id');
+  first.drop();
+
+  const again = connect({ name: 'Joan', resume: first.resume });
+  assert.equal(again.id, first.id);
+  assert.equal(again.resume, first.resume, 'the same token, since it is only the id signed');
+});
+
+test('a token outlives its server: any server with the same secret honours it', () => {
+  const before = new SignalServer(ice, { secret: 'shared' });
+  const after = new SignalServer(ice, { secret: 'shared' });
+  const elsewhere = new SignalServer(ice, { secret: 'another' });
+  const original = connect({}, before);
+
+  assert.equal(connect({ resume: original.resume }, after).id, original.id, 'a restart keeps the id');
+  assert.notEqual(connect({ resume: original.resume }, elsewhere).id, original.id,
+                  'another secret mints a new one');
+  const forged = `${'0'.repeat(32)}.${'0'.repeat(32)}`;
+  assert.notEqual(connect({ resume: forged }, after).id, '0'.repeat(32), 'and a forgery gets nothing');
+});
+
+test('a resume token must be a string', () => {
+  const peer = connect({ resume: 42 });
+  assert.equal(peer.last('error').code, 'bad_field');
+  assert.equal(peer.last('welcome'), null);
+});
+
+test('a dropped host keeps its game through the grace period', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const host = connect({ name: 'host' });
+  const joiner = connect({ name: 'joiner' });
+  host.say(advert({ nonce: 'first' }));
+  const game = host.last('advertised').game;
+  joiner.say({ type: 'join', game });
+
+  host.drop();
+  assert.equal(joiner.last('game_closed'), null, 'nobody is told');
+  const lister = connect();
+  lister.say({ type: 'list' });
+  assert.deepEqual(lister.last('games').games, [], 'but nobody new is offered the game meanwhile');
+
+  t.mock.timers.tick(19_000);
+  const back = connect({ name: 'host', resume: host.resume });
+  assert.equal(back.id, host.id);
+  back.say(advert({ nonce: 'first' }));
+  assert.equal(back.last('advertised').game, game, 'its game, under the same id');
+  lister.say({ type: 'list' });
+  assert.equal(lister.last('games').games[0]?.players, 2, 'listed again, with the joiner still in it');
+  back.say({ type: 'signal', to: joiner.id, data: { kind: 'request' } });
+  assert.equal(joiner.last('signal').from, back.id, 'and still reachable as a co-member');
+
+  t.mock.timers.tick(5_000);
+  assert.equal(joiner.last('game_closed'), null, 'the grace period ended when it came back');
+});
+
+test('a host that does not come back in time loses its game', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const host = connect();
+  const joiner = connect();
+  host.say(advert());
+  const game = host.last('advertised').game;
+  joiner.say({ type: 'join', game });
+
+  host.drop();
+  t.mock.timers.tick(19_999);
+  assert.equal(joiner.last('game_closed'), null);
+  t.mock.timers.tick(1);
+  assert.equal(joiner.last('game_closed').game, game);
+  assert.equal(server.registry.peers.has(host.id), false);
+});
+
+test('the newer connection wins', () => {
+  const first = connect({ name: 'twice' });
+  const second = connect({ name: 'twice', resume: first.resume });
+  assert.equal(second.id, first.id);
+  assert.equal(first.last('error').code, 'replaced', 'the old connection is told why');
+  assert.equal(first.closedByServer, 4000, 'and closed');
+
+  first.say(advert({ name: 'stale' }));
+  const lister = connect();
+  lister.say({ type: 'list' });
+  assert.deepEqual(lister.last('games').games, [], 'it no longer speaks for the peer');
+
+  first.drop();
+  assert.ok(server.registry.peers.has(second.id), 'nor does its closing take the peer away');
+  second.say({ type: 'list' });
+  assert.notEqual(second.last('games'), null);
+});
+
+test('the same nonce is the same room, even on another server; another nonce, another game', () => {
+  const before = new SignalServer(ice, { secret: 'shared' });
+  const host = connect({}, before);
+  host.say(advert({ nonce: 'one' }));
+  const game = host.last('advertised').game;
+  assert.match(game, /^[0-9a-f]{16}$/);
+  host.say(advert({ nonce: 'one', state: 2 }));
+  assert.equal(host.last('advertised').game, game, 'a refresh');
+
+  const after = new SignalServer(ice, { secret: 'shared' });
+  const back = connect({ resume: host.resume }, after);
+  back.say(advert({ nonce: 'one' }));
+  assert.equal(back.last('advertised').game, game, 'a restarted server derives the same id');
+
+  const joiner = connect({}, after);
+  joiner.say({ type: 'join', game });
+  back.say(advert({ nonce: 'two' }));
+  assert.notEqual(back.last('advertised').game, game);
+  assert.equal(joiner.last('game_closed').game, game, 'and the old game closes');
+});
+
+test('a member who joins again is not announced again', () => {
+  const host = connect();
+  const joiner = connect();
+  host.say(advert());
+  const game = host.last('advertised').game;
+  joiner.say({ type: 'join', game });
+  joiner.say({ type: 'join', game });
+  assert.equal(joiner.count('joined'), 2, 'each join is answered');
+  assert.equal(host.count('peer_joined'), 1, 'but the host hears of it once');
+  host.say({ type: 'list' });
+  assert.equal(host.last('games').games[0].players, 2);
+});
+
+test('joining another game leaves the first', () => {
+  const first = connect();
+  const second = connect();
+  const joiner = connect();
+  first.say(advert({ name: 'first' }));
+  second.say(advert({ name: 'second' }));
+  joiner.say({ type: 'join', game: first.last('advertised').game });
+  joiner.say({ type: 'join', game: second.last('advertised').game });
+  assert.equal(first.last('peer_left').peer, joiner.id);
+  joiner.say({ type: 'list' });
+  const players = Object.fromEntries(joiner.last('games').games.map(g => [g.name, g.players]));
+  assert.deepEqual(players, { first: 1, second: 2 });
+});
+
+test('an expired game lets its players go, and tells them', () => {
+  const stale = new SignalServer(ice, { roomTtl: -1 }); // everything is already stale
+  const host = connect({}, stale);
+  const joiner = connect({}, stale);
+  host.say(advert());
+  const game = host.last('advertised').game;
+  joiner.say({ type: 'join', game });
+
+  stale.expire();
+  assert.equal(joiner.last('game_closed').game, game);
+  assert.equal(host.last('game_closed').game, game, 'the host too: it did not ask for this');
+  joiner.say(advert({ name: 'mine now' }));
+  assert.equal(joiner.last('error'), null, 'a former member may host');
+  host.say(advert());
+  assert.equal(host.last('error'), null, 'and so may the former host');
+});
+
+test('a shutdown says goodbye to no one', () => {
+  const host = connect();
+  const joiner = connect();
+  host.say(advert());
+  joiner.say({ type: 'join', game: host.last('advertised').game });
+  server.shutdown();
+  host.drop();
+  assert.equal(joiner.last('game_closed'), null, 'everyone is about to reconnect elsewhere');
 });

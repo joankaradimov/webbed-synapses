@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import * as protocol from '../src/protocol.js';
-import { Registry } from '../src/rooms.js';
+import { Registry, roomId } from '../src/rooms.js';
 
 const refused = code => error => error instanceof protocol.ProtocolError && error.code === code;
 
@@ -125,6 +125,59 @@ test('a room expires without a heartbeat', () => {
   host(reg);
   assert.equal(reg.expire().length, 1);
   assert.equal(reg.rooms.size, 0);
+});
+
+test('an expired room lets go of everyone in it', () => {
+  // It used to forget the room and leave its people pointing at it, so that
+  // none of them could ever host.
+  const reg = new Registry({ roomTtl: -1 });
+  const [hoster, room] = host(reg);
+  const joiner = reg.addPeer('SEXP', 1, 'joiner');
+  reg.join(joiner, room.id);
+  const [expired] = reg.expire();
+  assert.deepEqual([...expired.members].sort(), [hoster.id, joiner.id].sort(),
+                   'returned with its members, to be told');
+  assert.deepEqual([hoster.room, hoster.hosting, joiner.room], [null, null, null]);
+  reg.advertise(joiner, { name: 'mine', stat: '', state: 0, maxPlayers: 4, extra: '' });
+});
+
+test('a room id comes from its host and a nonce', () => {
+  const a = '0123456789abcdef0123456789abcdef';
+  const b = 'fedcba9876543210fedcba9876543210';
+  assert.match(roomId(a, 'x'), /^[0-9a-f]{16}$/);
+  assert.equal(roomId(a, 'x'), roomId(a, 'x'), 'stable, so a re-advert finds its room');
+  assert.notEqual(roomId(a, 'x'), roomId(a, 'y'), 'two games of one host');
+  assert.notEqual(roomId(a, 'x'), roomId(b, 'x'), 'one nonce, two hosts');
+});
+
+test('a resumed id is kept', () => {
+  const id = '0123456789abcdef0123456789abcdef';
+  assert.equal(new Registry().addPeer('SEXP', 1, 'back', { id }).id, id);
+});
+
+test('a host whose connection is gone keeps its room, unlisted and unexpired', () => {
+  const reg = new Registry({ roomTtl: -1 });
+  const [hoster, room] = host(reg);
+  hoster.connected = false;
+  assert.deepEqual([...reg.visible(reg.addPeer('SEXP', 1, 'lister'))], []);
+  assert.deepEqual(reg.expire(), [], 'its grace period decides, not the heartbeat');
+  assert.equal(reg.rooms.get(room.id), room);
+  hoster.connected = true;
+  assert.equal(reg.expire().length, 1);
+});
+
+test('joining again changes nothing; joining elsewhere leaves', () => {
+  const reg = new Registry();
+  const [, first] = host(reg);
+  const [, second] = host(reg);
+  const joiner = reg.addPeer('SEXP', 1, 'joiner');
+  reg.join(joiner, first.id);
+  reg.join(joiner, first.id);
+  assert.equal(first.members.size, 2);
+  reg.join(joiner, second.id);
+  assert.equal(first.members.has(joiner.id), false);
+  assert.equal(second.members.has(joiner.id), true);
+  assert.equal(joiner.room, second.id);
 });
 
 test('re-advertising is a heartbeat, not a second room', () => {

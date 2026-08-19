@@ -2,8 +2,10 @@
 //
 // Deliberately free of sockets and timers so it can be tested directly.
 // State is in memory and single-process by design -- see server/README.md.
+// None of it has to survive a restart: every client puts its own part back
+// when it reconnects (docs/signalling-protocol.md, "Reconnecting").
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 
 import * as protocol from './protocol.js';
@@ -15,10 +17,24 @@ import * as protocol from './protocol.js';
  * endpoint::addr, both of which are exactly 16 opaque bytes. It has to be
  * stable for the session and identical for every participant, because storm
  * gossips it player-to-player and then asks a module to send to a peer it has
- * never met (docs/snp-abi.md section 6).
+ * never met (docs/snp-abi.md section 6). A resume token carries it across a
+ * reconnect (resume.js).
  */
 export function newPeerId() {
   return randomBytes(protocol.PEER_ID_BYTES).toString('hex');
+}
+
+/**
+ * A room's id: a hash of its host's id and a nonce the host picked for the
+ * game.
+ *
+ * Derived rather than random, so that a host re-advertising after a reconnect,
+ * or to a server that restarted and remembers nothing, gets the same room back
+ * -- and its players can join it again by the id they already have. The nonce
+ * keeps two games from the same host apart.
+ */
+export function roomId(hostId, nonce = '') {
+  return createHash('sha256').update(`${hostId}/${nonce}`).digest('hex').slice(0, 16);
 }
 
 /** Seconds on a monotonic clock. */
@@ -36,6 +52,9 @@ export class Peer {
     this.open = open;
     this.room = null;
     this.hosting = null;
+    // False while its connection is gone and its place is being kept for it
+    // (server.js, the grace period). Its rooms are kept but not listed.
+    this.connected = true;
   }
 
   get scope() {
@@ -86,8 +105,9 @@ export class Registry {
 
   // -- peers ---------------------------------------------------------------
 
-  addPeer(product, version, name, { open = false } = {}) {
-    const peer = new Peer({ id: newPeerId(), product, version, name, open });
+  /** `id` is a resumed one; without it, a new one is minted. */
+  addPeer(product, version, name, { open = false, id = newPeerId() } = {}) {
+    const peer = new Peer({ id, product, version, name, open });
     this.peers.set(peer.id, peer);
     return peer;
   }
@@ -132,12 +152,22 @@ export class Registry {
 
   // -- rooms ---------------------------------------------------------------
 
-  /** Create or refresh the caller's room. Repeating this is the heartbeat. */
-  advertise(peer, { name, stat, state, maxPlayers, extra }) {
+  /**
+   * Create or refresh the caller's room. Repeating this is the heartbeat.
+   *
+   * The same nonce means the same game, and so the same room. A different one
+   * means a new game: the old room is closed first, and the caller tells its
+   * members.
+   */
+  advertise(peer, { nonce = '', name, stat, state, maxPlayers, extra }) {
     protocol.require(peer.room === null || peer.room === peer.hosting,
                      'already_joined', 'cannot host while joined to another game');
 
-    const existing = peer.hosting && this.rooms.get(peer.hosting);
+    const id = roomId(peer.id, nonce);
+    if (peer.hosting && peer.hosting !== id)
+      this.unadvertise(peer);
+
+    const existing = this.rooms.get(id);
     if (existing) {
       Object.assign(existing, { name, stat, state, maxPlayers, extra });
       existing.refreshed = now();
@@ -145,7 +175,7 @@ export class Registry {
     }
 
     const room = new Room({
-      id: newPeerId().slice(0, 16), host: peer.id, product: peer.product,
+      id, host: peer.id, product: peer.product,
       version: peer.version, name, stat, state, maxPlayers, extra, members: [peer.id],
     });
     this.rooms.set(room.id, room);
@@ -167,42 +197,64 @@ export class Registry {
     return room;
   }
 
-  join(peer, roomId) {
-    const room = this.rooms.get(roomId);
+  /**
+   * Join a room. Joining one the peer is already in changes nothing, which is
+   * what a client that reconnected does. Joining another leaves the room it
+   * was in, unless it hosts that one.
+   */
+  join(peer, id) {
+    const room = this.rooms.get(id);
     protocol.require(room !== undefined, 'no_such_game', 'game not found');
     protocol.require(room.scope === peer.scope, 'wrong_product',
                      'game is for a different product or version');
+    if (room.members.has(peer.id)) {
+      peer.room = room.id;
+      return room;
+    }
     protocol.require(room.members.size < Math.min(room.maxPlayers, protocol.MAX_PEERS_PER_ROOM),
                      'game_full', 'game is full');
+    if (peer.room && peer.room !== peer.hosting)
+      this.rooms.get(peer.room)?.members.delete(peer.id);
     room.members.add(peer.id);
     peer.room = room.id;
     return room;
   }
 
   /**
-   * Rooms this peer may see: same product and version, not expired.
+   * Rooms this peer may see: same product and version, not expired, and a
+   * host that is connected.
    *
    * Blizzard's own providers filter advertisements by programid and versionid
    * for the same reason (IPX.CPP:265) -- Diablo and StarCraft must not appear
-   * in each other's lists.
+   * in each other's lists. A host whose connection is gone may never come
+   * back, so its game is not offered to anyone new until it does.
    */
   *visible(peer) {
     for (const room of this.rooms.values())
-      if (room.scope === peer.scope)
+      if (room.scope === peer.scope && this.#hostConnected(room))
         yield room;
   }
 
-  /** Drop rooms whose host stopped refreshing them. */
+  /**
+   * Drop rooms whose host stopped refreshing them, releasing their members.
+   * Returns them, members intact, for the caller to tell.
+   *
+   * Not the room of a host whose connection is gone: it cannot refresh, and
+   * the grace period it is in decides its fate.
+   */
   expire() {
     const cutoff = now() - this.roomTtl;
-    const dead = [...this.rooms.values()].filter(room => room.refreshed < cutoff);
+    const dead = [...this.rooms.values()]
+      .filter(room => room.refreshed < cutoff && this.#hostConnected(room));
     for (const room of dead) {
       this.rooms.delete(room.id);
-      const host = this.peers.get(room.host);
-      if (host)
-        host.hosting = null;
+      this.#detach(room);
     }
     return dead;
+  }
+
+  #hostConnected(room) {
+    return this.peers.get(room.host)?.connected !== false;
   }
 
   // -- routing -------------------------------------------------------------
@@ -238,10 +290,10 @@ export class Registry {
     return target;
   }
 
-  /** Where a multicast goes: every other open peer in the sender's scope. */
+  /** Where a multicast goes: every other connected open peer in the sender's scope. */
   *openPeers(sender) {
     for (const peer of this.peers.values())
-      if (peer.open && peer.id !== sender.id && peer.scope === sender.scope)
+      if (peer.open && peer.connected && peer.id !== sender.id && peer.scope === sender.scope)
         yield peer.id;
   }
 

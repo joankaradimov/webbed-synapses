@@ -5,16 +5,24 @@ One service, one dependency (`ws`), no database. Node 22 or newer.
 ```
 cd server
 npm ci
-node src/main.js --port 8765 \
+node src/main.js --port 8765 --secret <any-long-random-string> \
     --stun stun:stun.l.google.com:19302 \
     --turn turn:relay.example.org:3478 --turn-secret <shared-with-coturn>
 ```
 
 Every option also reads from the environment (`SNPS_HOST`, `SNPS_PORT`,
-`SNPS_STUN`, `SNPS_TURN`, `SNPS_TURN_SECRET`, `SNPS_TURN_TTL`,
-`SNPS_ROOM_TTL`), so the same image runs in a container unchanged. `--verbose`
-logs every frame in and out, truncated, which is how a failed negotiation gets
-diagnosed. Run `coturn` beside it; do not write a TURN server.
+`SNPS_STUN`, `SNPS_TURN`, `SNPS_TURN_SECRET`, `SNPS_TURN_TTL`, `SNPS_SECRET`,
+`SNPS_GRACE`, `SNPS_ROOM_TTL`), so the same image runs in a container
+unchanged. `--verbose` logs every frame in and out, truncated, which is how a
+failed negotiation gets diagnosed. Run `coturn` beside it; do not write a TURN
+server.
+
+`--secret` signs the resume tokens that give a reconnecting client its peer id
+back. Give every instance the same one, and a restart or a replacement loses
+nobody's identity. Without it the server makes one up, and ids survive a
+dropped connection but not a restart; it warns about that when it starts. It
+must not be the TURN secret, which coturn holds too. `--grace` (default 20
+seconds) is how long a peer whose connection dropped keeps its place.
 
 ## Testing it
 
@@ -24,19 +32,22 @@ node tools/signal-smoke.mjs --url ws://host:8765     # from the root
 ```
 
 `npm test` runs Node's own test runner:
-- **33 unit tests.** `rooms.test.js` checks the directory's rules directly.
+- **49 unit tests.** `rooms.test.js` checks the directory's rules directly.
   `flow.test.js` drives the whole server through a stand-in connection, with
-  no network.
-- **The protocol over a real socket.** `socket.test.js` runs 18 checks against
-  an in-process server. The client is Node's built-in `WebSocket`, not the `ws`
-  the server uses, so the two ends are independent implementations. That is
-  the one seam the stand-in cannot reach.
+  no network, and mocked timers for the grace period.
+- **The protocol over a real socket.** `socket.test.js` runs 20 checks against
+  an in-process server, and a restart: a client closed with 1012 comes back to
+  a second server as the same peer, with the same game. The client is Node's
+  built-in `WebSocket`, not the `ws` the server uses, so the two ends are
+  independent implementations. That is the one seam the stand-in cannot reach.
 
-`tools/signal-smoke.mjs` runs the same 18 checks against any server: a
+`tools/signal-smoke.mjs` runs the same 20 checks against any server: a
 deployment with `--url`, or one it starts itself.
 
 The transport tests elsewhere in the repository start this server themselves,
-through `tests/harness/run.mjs`.
+through `tests/harness/run.mjs`. The harness's last section kills it, and
+`run.mjs --respawn` starts another in its place, for the transports to come
+back to.
 
 ## Why Node
 
@@ -54,13 +65,16 @@ server now serves. `ws` is Node's standard WebSocket server, with no
 dependencies of its own.
 
 Until 2026-10-01 this was Python, on asyncio and `websockets`. The port kept
-the wire protocol, the limits and the behaviour. That includes the two
-directory bugs listed under "Loose ends" in `AGENT.md`, which are fixes for
-another day.
+the wire protocol, the limits and the behaviour. That included two directory
+bugs listed under "Loose ends" in `AGENT.md`; the one in room expiry was fixed
+the same day.
 
-The honest caveat: state is in memory and the process is single. That is right
-for this workload and will stay right for a long time, but scaling out is not a
-matter of starting a second copy: room state would have to move somewhere
+State is in memory, and none of it is precious. Clients own their part and put
+it back after a reconnect, so a restart, or a replacement instance, costs a few
+seconds of reconnecting and nothing else (`docs/signalling-protocol.md`,
+"Reconnecting"). Scaling out is another matter. Two instances at once would
+each hold only the rooms created on it, so every member of a room must reach
+the same one: route by product and version, or move room state somewhere
 shared first. If that day comes, the boundary is already drawn. `rooms.js`
 holds all of it and knows nothing about sockets or timers.
 
@@ -69,6 +83,7 @@ holds all of it and knows nothing about sockets or timers.
 ```
 src/protocol.js   message limits and validation
 src/rooms.js      peers, rooms, scoping -- pure logic, no I/O
+src/resume.js     resume tokens: a peer id, signed, verifiable by any instance
 src/ice.js        STUN/TURN config and coturn REST credentials
 src/server.js     the connection handler, and run(), which serves it over ws
 src/log.js        timestamped lines on stderr; --verbose adds every frame
@@ -101,8 +116,16 @@ appear in each other's game lists.
 **The connection stays open for the whole session.** It is not a join-time
 handshake. Storm gossips peer addresses between players and then asks a module
 to reach someone it has never met, so an introduction can be needed at any
-moment. The server pings every 20 seconds. A client that has not answered one
-by the next is dropped, which keeps NATs from forgetting the connection.
+moment. The server pings every 20 seconds, which keeps NATs from forgetting
+the connection. A client that has not answered one by the next is cut off, and
+gets the grace period like any connection that drops.
+
+**A restart is routine.** SIGTERM closes every connection with 1012, "service
+restart", and the clients come back to whatever is listening next. They resume
+their ids with the tokens they hold, and hosts and members re-send their
+adverts and joins. A room id is derived from its host's id and the advert's
+nonce, so the room comes back under the id its members already have. Nothing
+is said to anyone on the way down: no `game_closed`, no `peer_left`.
 
 **Some peers are open.** DevilutionX's players find games the way they would on
 a LAN: a query to everyone, answered by whoever is running each game. A peer
