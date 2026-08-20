@@ -1,6 +1,3 @@
-# Reference sources, fetched by tools/fetch-references.sh — never committed
-/third_party/
-
 # Build
 /build/
 /out/
