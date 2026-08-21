@@ -1,0 +1,40 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "msvc-x86",
+      "displayName": "Visual Studio, 32-bit (primary)",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "Win32",
+      "binaryDir": "${sourceDir}/build/msvc-x86"
+    },
+    {
+      "name": "mingw-x86",
+      "displayName": "MinGW-w64 cross-compile, 32-bit",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/mingw-x86",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/i686-w64-mingw32.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "abi-check",
+      "displayName": "Host layout check (no linking, no Windows needed)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/abi-check",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "SNP_BUILD_PROVIDERS": "OFF",
+        "SNPS_BUILD_TRANSPORT": "OFF",
+        "CMAKE_C_FLAGS": "-m32",
+        "CMAKE_CXX_FLAGS": "-m32",
+        "CMAKE_TRY_COMPILE_TARGET_TYPE": "STATIC_LIBRARY"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "msvc-x86",  "configurePreset": "msvc-x86",  "configuration": "RelWithDebInfo" },
+    { "name": "mingw-x86", "configurePreset": "mingw-x86" },
+    { "name": "abi-check", "configurePreset": "abi-check" }
+  ]
+}
