@@ -124,7 +124,7 @@ entirely.
 `NO_MEDIA=ON`**. `src/impl/dtlstransport.cpp:416` calls
 `mbedtls_ssl_conf_dtls_srtp_protection_profiles()` unconditionally — that code
 is not behind `RTC_ENABLE_MEDIA` — so a stock Mbed TLS build fails on
-undeclared `MBEDTLS_TLS_SRTP_*`. `tools/webrtc-probe/mbedtls-user-config.h`
+undeclared `MBEDTLS_TLS_SRTP_*`. `cmake/mbedtls-user-config.h`
 turns it on via `MBEDTLS_USER_CONFIG_FILE`, which Mbed TLS propagates as a
 PUBLIC compile definition so libdatachannel sees the same configuration.
 
