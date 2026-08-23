@@ -1,0 +1,48 @@
+<!doctype html>
+<!-- The browser half of tests/wasm. browser.mjs serves it; the query string
+     becomes the program's arguments: ?server=ws://...&echo=1 -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>snps wasm test</title>
+<style>
+  body { font: 14px/1.4 ui-monospace, Consolas, monospace; margin: 16px; }
+</style>
+</head>
+<body>
+<pre id="log">loading...</pre>
+<script>
+  const log = document.getElementById('log');
+  log.textContent = '';
+  const write = line => { log.textContent += line + '\n'; };
+  // A JavaScript error in the glue kills the program before it can report,
+  // so any of these is a failure too -- a quiet page is not a pass.
+  let failed = false;
+  const fail = why => {
+    failed = true;
+    document.title = 'snps wasm test: FAILED';
+    write('FAILED: ' + why);
+  };
+  window.addEventListener('error', event => fail(event.message));
+  window.addEventListener('unhandledrejection', event => fail(String(event.reason)));
+  const args = [];
+  for (const [key, value] of new URLSearchParams(location.search))
+    args.push('--' + key, value);
+  var Module = {
+    arguments: args,
+    print: line => { write(line); console.log(line); },
+    printErr: line => { write(line); console.warn(line); },
+    onAbort: what => fail('aborted: ' + what),
+    onExit: code => {
+      if (code)
+        fail('exit status ' + code);
+      else if (!failed) {
+        document.title = 'snps wasm test: passed';
+        write('passed');
+      }
+    },
+  };
+</script>
+<script src="snps-wasm-test.js"></script>
+</body>
+</html>
