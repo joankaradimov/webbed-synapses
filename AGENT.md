@@ -538,6 +538,26 @@ transport's WebSocket is still connecting, and browsers complain when a socket
 is closed before it opens. The datachannel-wasm patch now lets such a socket
 open first, and both halves of `tests/wasm` do the same thing to show it.
 
+**A shared libjuice** (2026-10-03). The `udp_sendto` clash above is fixed the
+way decided on 2026-09-26. snps links an installed libjuice DLL whenever it
+finds one, whose `udp_sendto` stays inside it, and falls back to the bundled
+static copy otherwise; `USE_SYSTEM_JUICE=OFF` forces the bundled one
+(`cmake/LibDataChannel.cmake`). `webbed.snp` always takes the bundled copy,
+since it has to stay one self-contained DLL. Under MSYS2 UCRT64 with GCC 16.2
+and MSYS2's libjuice 1.7.3:
+- the core and the harness built against it, and the harness passed;
+- a program with a `udp_sendto` of its own linked beside the core;
+- against the bundled static copy, the same program did not
+  (`docs/webrtc-stack.md`, risk 4).
+
+DevilutionX can drop its rename. Until it does, its shim has to skip the
+rename where there is no `juice-static` target, which is wherever a libjuice
+is installed. Its MSVC build would need an MSVC libjuice, such as vcpkg's,
+which is untested. The browser build has no libjuice at all.
+That was also snps's first GCC build. It showed that `tests/abi_layout.cpp`,
+which accepts only 32-bit x86, was added to every build. It is now added only
+for a 32-bit target, so a 64-bit build of all targets works too.
+
 Next, in the order that retires the most risk:
 
 1. **A match played through over `webbed.snp`.** Everything before the match
@@ -610,11 +630,3 @@ Loose ends, smaller than any of those:
 - **Slot 20's field name.** `SNETSPI_SC::StartAdvertisingGameShort` in
   `storm_spi.h` is really `GetLocalPlayerName` (`docs/snp-abi.md` §4).
   Renaming it means changing `tests/abi_layout.cpp` in the same commit.
-- **libjuice's `udp_sendto`.** It clashes with lwIP's for any consumer that
-  links both. DevilutionX renames it in its own shim. Two better homes for the
-  fix, neither done yet:
-  - `cmake/LibDataChannel.cmake`, where libjuice arrives, which would spare
-    every consumer;
-  - libjuice itself, upstream.
-
-  `docs/webrtc-stack.md`, risk 4.

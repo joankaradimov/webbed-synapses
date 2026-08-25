@@ -179,3 +179,20 @@ PUBLIC compile definition so libdatachannel sees the same configuration.
    The rename is safe because libjuice uses the name only for that function
    and its calls. None of libjuice's other `udp_*` names match lwIP's.
    Renaming it upstream in libjuice would spare every other consumer.
+   **The fix chosen (2026-09-26) is a shared libjuice.** A libjuice DLL exports
+   only its API: MSYS2's 1.7.3 exports its 32 `juice_*` functions and no
+   `udp_*` at all. So its `udp_sendto` never meets lwIP's. snps links an
+   installed one whenever `find_package(LibJuice)` finds it, and falls back to
+   the bundled static copy otherwise (`cmake/LibDataChannel.cmake`);
+   `USE_SYSTEM_JUICE=OFF` forces the bundled one.
+   Verified 2026-10-03 under MSYS2 UCRT64 with GCC 16.2 and that package:
+   - the core and the harness built against it, and the harness passed;
+   - a program defining a `udp_sendto` of its own, as lwIP does, linked beside
+     the core and ran;
+   - against the bundled static copy, the same program did not link:
+     `multiple definition of 'udp_sendto'`, from libjuice's `udp.c:204`.
+
+   An MSVC build does not look for one on `PATH`, where an MSYS2 `bin`
+   directory would offer a MinGW build. An MSVC libjuice, such as vcpkg's, is
+   found the usual way; that is untested. `webbed.snp` always takes the bundled
+   copy, since it has to be one self-contained DLL.

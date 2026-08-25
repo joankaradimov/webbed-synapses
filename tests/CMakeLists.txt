@@ -1,7 +1,9 @@
 # Compiled, never linked: the static_asserts are the test, so a successful
 # compile is a pass. This lets the layout be checked on any host with a 32-bit
-# capable compiler, no Windows and no linker required.
-if(NOT EMSCRIPTEN)
+# capable compiler, no Windows and no linker required. Only for a 32-bit x86
+# target, which is what the layouts describe and all the file accepts; wasm32
+# has 32-bit pointers but is not x86.
+if(NOT EMSCRIPTEN AND CMAKE_SIZEOF_VOID_P EQUAL 4)
   add_library(snp_abi_layout OBJECT abi_layout.cpp)
   target_link_libraries(snp_abi_layout PRIVATE snp_abi)
 endif()

@@ -29,6 +29,7 @@ endif()
 add_subdirectory(null)
 
 # The real one. Needs the transport, which the layout-only build leaves out.
+# It carries its own libjuice, which cmake/LibDataChannel.cmake sees to.
 if(SNPS_BUILD_TRANSPORT)
   add_subdirectory(webrtc)
 endif()

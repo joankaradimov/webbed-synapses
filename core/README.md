@@ -24,6 +24,17 @@ build is threaded (SDL2's `USE_PTHREADS=1`). Its shim appends `-pthread` to
 `CMAKE_C_FLAGS` and `CMAKE_CXX_FLAGS` before adding snps. It runs without
 cross-origin isolation because the game starts no threads.
 
+A native consumer that also links lwIP — DevilutionX does, through libzt —
+needs a shared libjuice. The bundled copy is static, and its global
+`udp_sendto` collides with lwIP's (`docs/webrtc-stack.md`, risk 4); a DLL's
+stays inside it. snps links an installed libjuice whenever
+`find_package(LibJuice)` finds one, and the bundled copy otherwise;
+`USE_SYSTEM_JUICE=OFF` forces the bundled one. The SNP module always takes the
+bundled copy, since it ships as a single DLL. A consumer that renames the
+bundled copy's `udp_sendto`, as DevilutionX's shim does, has to check first
+that the `juice-static` target exists: it does not when a libjuice is
+installed.
+
 The DevilutionX adapter, `protocol_webrtc`, lives in DevilutionX's own tree,
 not here.
 

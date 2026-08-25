@@ -61,16 +61,47 @@ function(snps_require_libdatachannel)
   set(NO_TESTS     ON  CACHE BOOL "" FORCE)
   set(USE_MBEDTLS  ON  CACHE BOOL "" FORCE)
 
+  # --- libjuice -------------------------------------------------------------
+  # The copy libdatachannel bundles is linked statically and exports a global
+  # udp_sendto, and so does lwIP: a program that links both does not link
+  # (docs/webrtc-stack.md, risk 4). DevilutionX does, through libzt. So an
+  # installed, shared libjuice is preferred, whose udp_sendto stays inside its
+  # DLL: MSYS2's mingw-w64-*-libjuice, say, or vcpkg's libjuice. The bundled
+  # copy, fetched with libdatachannel, is the fallback when none is found.
+  # webbed.snp always takes the bundled one, since it has to be one
+  # self-contained DLL.
+  option(USE_SYSTEM_JUICE "Prefer an installed, shared libjuice to the bundled one" ON)
+  set(_system_juice OFF)
+  set(_juice "the bundled one")
+  if(NOT USE_SYSTEM_JUICE)
+    string(APPEND _juice ", as USE_SYSTEM_JUICE is off")
+  elseif(SNP_BUILD_PROVIDERS AND WIN32)
+    string(APPEND _juice ", which webbed.snp needs")
+  else()
+    # Not through PATH for MSVC: an MSYS2 bin directory there would offer a
+    # MinGW libjuice. vcpkg's, or one under the install prefixes, is found.
+    set(_where "")
+    if(MSVC)
+      set(_where NO_SYSTEM_ENVIRONMENT_PATH)
+    endif()
+    find_package(LibJuice 1.7.0 QUIET ${_where})
+    if(LibJuice_FOUND)
+      set(_system_juice ON)
+      set(_juice "the installed one, ${LibJuice_VERSION}, in ${LibJuice_DIR}")
+    else()
+      string(APPEND _juice "; no installed libjuice 1.7 or newer was found")
+    endif()
+  endif()
+  message(STATUS "snps: libjuice: ${_juice}")
+  # What libdatachannel's own option of the same name reads: a normal variable
+  # shadows the preference in the cache (CMP0077).
+  set(USE_SYSTEM_JUICE ${_system_juice})
+
   FetchContent_Declare(libdatachannel
     GIT_REPOSITORY https://github.com/paullouisageneau/libdatachannel.git
     GIT_TAG        ${SNPS_LIBDATACHANNEL_TAG}
     GIT_SHALLOW    TRUE)
   FetchContent_MakeAvailable(libdatachannel)
-  # libjuice, which it bundles as juice-static, exports a global udp_sendto,
-  # and so does lwIP. A consumer that also links lwIP renames libjuice's.
-  # DevilutionX links it through libzt, and does this in its own shim:
-  #   target_compile_definitions(juice-static PRIVATE udp_sendto=juice_udp_sendto)
-  # docs/webrtc-stack.md, risk 4.
 
   # --- nlohmann/json -------------------------------------------------------
   # libdatachannel carries it as a submodule for its examples only. Reusing
