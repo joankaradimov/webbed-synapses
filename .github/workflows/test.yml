@@ -1,0 +1,73 @@
+name: test
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The signalling server's unit tests, and the protocol over a real socket.
+  server:
+    name: server (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  # Storm-facing struct layouts, compiled for 32-bit x86 and never linked: the
+  # static_asserts are the test. Multilib for the 32-bit C++ headers.
+  abi-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends g++-multilib ninja-build
+      - run: cmake --preset abi-check
+      - run: cmake --build --preset abi-check
+
+  # The primary toolchain: null.snp and webbed.snp, then ctest, which runs the
+  # transport harness and snp-sim against a server each one starts itself.
+  # windows-2022 because the preset names Visual Studio 17 2022.
+  msvc-x86:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+        working-directory: server
+      - run: cmake --preset msvc-x86
+      - run: cmake --build --preset msvc-x86 --parallel
+      - run: ctest --test-dir build/msvc-x86 -C RelWithDebInfo --output-on-failure
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: snp-modules
+          path: |
+            build/msvc-x86/adapters/snp/null/RelWithDebInfo/null.snp
+            build/msvc-x86/adapters/snp/webrtc/RelWithDebInfo/webbed.snp
+          if-no-files-found: warn
