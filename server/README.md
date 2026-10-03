@@ -13,7 +13,9 @@ node src/main.js --port 8765 --secret <any-long-random-string> \
 Every option also reads from the environment (`SNPS_HOST`, `SNPS_PORT`,
 `SNPS_STUN`, `SNPS_TURN`, `SNPS_TURN_SECRET`, `SNPS_TURN_TTL`, `SNPS_SECRET`,
 `SNPS_GRACE`, `SNPS_ROOM_TTL`), so the same image runs in a container
-unchanged. `--verbose` logs every frame in and out, truncated, which is how a
+unchanged. Without `SNPS_PORT`, a platform's `PORT` is taken. A host that
+deploys the repository root rather than this directory gets the root
+`package.json`: `npm ci` there installs this one, and `npm start` runs it. `--verbose` logs every frame in and out, truncated, which is how a
 failed negotiation gets diagnosed. Run `coturn` beside it; do not write a TURN
 server.
 

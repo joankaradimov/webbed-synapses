@@ -1,0 +1,17 @@
+{
+  "name": "webbed-synapses",
+  "version": "0.1.0",
+  "description": "The signalling server in server/, for hosts that deploy the repository root",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "postinstall": "npm ci --prefix server",
+    "build": "npm ci --prefix server",
+    "start": "node server/src/main.js",
+    "test": "npm test --prefix server"
+  }
+}

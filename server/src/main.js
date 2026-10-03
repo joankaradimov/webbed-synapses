@@ -25,7 +25,8 @@ try {
   ({ values: args } = parseArgs({
     options: {
       host: { type: 'string', default: env.SNPS_HOST ?? '0.0.0.0' },
-      port: { type: 'string', default: env.SNPS_PORT ?? '8765' },
+      // PORT is what a hosting platform hands its app; SNPS_PORT still wins.
+      port: { type: 'string', default: env.SNPS_PORT ?? env.PORT ?? '8765' },
       stun: { type: 'string', default: env.SNPS_STUN ?? '' },
       turn: { type: 'string', default: env.SNPS_TURN ?? '' },
       'turn-secret': { type: 'string', default: env.SNPS_TURN_SECRET },
