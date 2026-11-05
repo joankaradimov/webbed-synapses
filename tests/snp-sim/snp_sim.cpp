@@ -104,7 +104,14 @@ struct Module {
         return true;
     }
 
+    // Storm calls Destroy before it unloads a module it initialised, always;
+    // so does this, even when a check failed and the test is leaving early.
+    // A module unloaded with its threads still running takes the process
+    // down on its way out, and the crash hides what failed.
     void unload() {
+        if (initialized && spi)
+            spi->Destroy();
+        initialized = false;
         if (handle)
             FreeLibrary(handle);
         handle = nullptr;
@@ -112,8 +119,16 @@ struct Module {
     }
 
     bool initialize() {
-        return spi->Initialize(&program, &player, &ui, &version, event) != FALSE;
+        initialized = spi->Initialize(&program, &player, &ui, &version, event) != FALSE;
+        return initialized;
     }
+
+    bool destroy() {
+        initialized = false;
+        return spi->Destroy() != FALSE;
+    }
+
+    bool initialized = false;
 
     std::vector<SNP_GAMELIST_SC> games() {
         std::vector<SNP_GAMELIST_SC> out;
@@ -301,7 +316,7 @@ void run(const std::string& modulePath) {
     check(gone, "StopAdvertisingGame takes the game off the joiner's list");
 
     // --- leaving -----------------------------------------------------------------
-    check(host.spi->Destroy() != FALSE && joiner.spi->Destroy() != FALSE,
+    check(host.destroy() && joiner.destroy(),
           "both copies Destroy cleanly");
     host.unload();
     joiner.unload();
@@ -315,7 +330,7 @@ void run(const std::string& modulePath) {
 
     // Storm comes back to the menu and loads everything again.
     check(host.load() && host.initialize(), "the module initialises again after a reload");
-    check(host.spi && host.spi->Destroy() != FALSE, "and destroys again");
+    check(host.spi && host.destroy(), "and destroys again");
     host.unload();
 
     // A server nobody is listening on: Initialize must fail, promptly.

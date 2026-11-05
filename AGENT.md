@@ -283,7 +283,7 @@ yet. DevilutionX has played games over the core, on x64 desktop.
       x64) and `tests/wasm` (wasm: 11 in Node; 13 in a browser, against a
       native peer). Each includes the server dying and being replaced.
 - [x] SNP adapter over that core — `adapters/snp/webrtc`, with `tests/snp-sim`
-      (28 checks, two copies of the real DLL in one process)
+      (29 checks, two copies of the real DLL in one process)
 - [ ] Two players in a real game over `webbed.snp` — listed, joined and
       started between two instances of a modified StarCraft build
       (2026-09-24); the match then desynced in that build's game code, not
