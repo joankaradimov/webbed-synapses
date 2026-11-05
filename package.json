@@ -4,7 +4,6 @@
   "description": "The signalling server in server/, for hosts that deploy the repository root",
   "license": "MIT",
   "private": true,
-  "type": "module",
   "engines": {
     "node": ">=22"
   },

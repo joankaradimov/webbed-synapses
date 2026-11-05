@@ -574,12 +574,15 @@ Next, in the order that retires the most risk:
    (untested).
 2. **The Internet path**: a STUN server for NAT traversal, then TURN for the
    players it cannot help, and a harness run with `relayOnly` against it.
-3. **CI, now that there are three targets.** The core builds for x86, x64 and
-   wasm, and each has a test. Nothing runs them automatically; there is no CI
-   at all yet. The wasm build is the one most likely to drift, because
-   datachannel-wasm implements only part of libdatachannel's API
-   (`docs/webrtc-stack.md`, risk 2), so its job matters most. The browser half
-   of `tests/wasm` needs a browser, which no ctest run has.
+3. **A wasm job in CI.** `.github/workflows/test.yml` runs the server's
+   tests, the layout check and the MSVC x86 build with its ctest, but nothing
+   builds wasm, which is the target most likely to drift: datachannel-wasm
+   implements only part of libdatachannel's API (`docs/webrtc-stack.md`, risk
+   2). It already broke unnoticed once: the root `package.json`'s
+   `"type": "module"` (2026-10-03) made Node load Emscripten's CommonJS output
+   as an ES module, and the wasm test could not start until it went
+   (2026-10-08). The browser half of `tests/wasm` needs a browser, which no
+   ctest run has.
 4. **What DevilutionX's adapter may still ask for.** None of these blocks it:
    - Whether a link runs through TURN, and its round-trip time, for
      `is_peer_relayed` and `get_latency_to`.
