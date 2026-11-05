@@ -12,8 +12,8 @@ node src/main.js --port 8765 --secret <any-long-random-string> \
 
 Every option also reads from the environment (`SNPS_HOST`, `SNPS_PORT`,
 `SNPS_STUN`, `SNPS_TURN`, `SNPS_TURN_SECRET`, `SNPS_TURN_TTL`, `SNPS_SECRET`,
-`SNPS_GRACE`, `SNPS_ROOM_TTL`), so the same image runs in a container
-unchanged. Without `SNPS_PORT`, a platform's `PORT` is taken. A host that
+`SNPS_GRACE`, `SNPS_ROOM_TTL`, `SNPS_HTTP_STREAM`), so the same image runs in
+a container unchanged. Without `SNPS_PORT`, a platform's `PORT` is taken. A host that
 deploys the repository root rather than this directory gets the root
 `package.json`: `npm ci` there installs this one, and `npm start` runs it. `--verbose` logs every frame in and out, truncated, which is how a
 failed negotiation gets diagnosed. Run `coturn` beside it; do not write a TURN
@@ -25,6 +25,31 @@ nobody's identity. Without it the server makes one up, and ids survive a
 dropped connection but not a restart; it warns about that when it starts. It
 must not be the TURN secret, which coturn holds too. `--grace` (default 20
 seconds) is how long a peer whose connection dropped keeps its place.
+
+## Behind a host that will not upgrade
+
+The one port answers WebSocket upgrades and plain HTTP both. Where a host's
+proxy will not upgrade a connection — SiteGround's Node.js hosting, as far as
+anyone has found, and shared hosting generally — clients speak the same
+protocol as HTTP sessions: Server-Sent Events for what the server pushes,
+POSTs for what they send (`docs/signalling-protocol.md`, "Over HTTP").
+Nothing on the server needs switching on. On such a host:
+
+- **Set `--secret`.** A host that restarts the process at will makes resume
+  tokens the difference between a blip and everyone's ids changing.
+- **`--http-stream`** (default 25 seconds) is how long a stream or a long poll
+  stays open before the client asks again. Keep it under the shortest request
+  timeout in front of the server. A proxy that buffers responses is handled by
+  the clients, which notice within 3 seconds and switch to long polling.
+- **Check it from outside:** `node tools/signal-smoke.mjs --url https://…`
+  runs the 20 protocol checks over HTTP against the deployment, and `--poll`
+  over long polling.
+
+Every answer carries `Access-Control-Allow-Origin: *`, so a browser build
+served from anywhere can use it. For testing clients against such hosts,
+`--no-websocket` answers an upgrade the way a proxy that does not do
+WebSockets does, and `--http-buffered` holds every response back until it
+ends, the way a buffering proxy does.
 
 ## Testing it
 
@@ -42,9 +67,15 @@ node tools/signal-smoke.mjs --url ws://host:8765     # from the root
   a second server as the same peer, with the same game. The client is Node's
   built-in `WebSocket`, not the `ws` the server uses, so the two ends are
   independent implementations. That is the one seam the stand-in cannot reach.
+- **The protocol over HTTP sessions.** `http.test.js` runs the same 20 checks
+  streaming and again long polling, through `test/http-socket.js`, a client
+  with the browser's WebSocket interface over `fetch()`. Then a WebSocket
+  host and an HTTP joiner in one game, a cut stream that loses nothing, a
+  client that stops asking, a restart, a replacement, and the plumbing: 404s,
+  CORS, cursors, oversized bodies.
 
 `tools/signal-smoke.mjs` runs the same 20 checks against any server: a
-deployment with `--url`, or one it starts itself.
+deployment with `--url` (`ws(s)://` or `http(s)://`), or one it starts itself.
 
 The transport tests elsewhere in the repository start this server themselves,
 through `tests/harness/run.mjs`. The harness's last section kills it, and
@@ -87,10 +118,12 @@ src/protocol.js   message limits and validation
 src/rooms.js      peers, rooms, scoping -- pure logic, no I/O
 src/resume.js     resume tokens: a peer id, signed, verifiable by any instance
 src/ice.js        STUN/TURN config and coturn REST credentials
-src/server.js     the connection handler, and run(), which serves it over ws
+src/server.js     the connection handler, and run(), which serves it over ws and http
+src/http.js       HTTP sessions: SSE down, POSTs up, for hosts that will not upgrade
 src/log.js        timestamped lines on stderr; --verbose adds every frame
 src/main.js       configuration and entry point
-test/             node --test: rooms, flow (stand-in), socket (real), smoke.js
+test/             node --test: rooms, flow (stand-in), socket and http (real),
+                  smoke.js, and http-socket.js, the HTTP client the checks use
 ```
 
 `SignalServer` does not know the WebSocket library. A connection is anything

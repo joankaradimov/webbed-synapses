@@ -1,12 +1,14 @@
-// The protocol over a real WebSocket: the one seam flow.test.js cannot reach,
-// since it drives the server through a stand-in connection. The client is
-// Node's own WebSocket, not the `ws` the server uses, so the two sides are
-// independent implementations.
+// The protocol over a real connection: the one seam flow.test.js cannot reach,
+// since it drives the server through a stand-in. Over a WebSocket, the client
+// is Node's own, not the `ws` the server uses, so the two sides are
+// independent implementations. Over HTTP -- an http:// or https:// url -- it
+// is HttpSocket, which has the same interface.
 //
-// socket.test.js runs this against an in-process server; tools/signal-smoke.mjs
-// runs it against any server, running or not.
+// socket.test.js and http.test.js run this against an in-process server;
+// tools/signal-smoke.mjs runs it against any server, running or not.
 
 import { MAX_FRAME_BYTES } from '../src/protocol.js';
+import { HttpSocket } from './http-socket.js';
 
 export class Client {
   constructor(socket, label) {
@@ -22,8 +24,9 @@ export class Client {
     });
   }
 
-  static open(url, label) {
-    const socket = new WebSocket(url);
+  /** `options.poll` starts an HTTP session in long-poll mode. */
+  static open(url, label, options = {}) {
+    const socket = /^https?:/i.test(url) ? new HttpSocket(url, options) : new WebSocket(url);
     return new Promise((resolve, reject) => {
       socket.addEventListener('open', () => resolve(new Client(socket, label)), { once: true });
       socket.addEventListener('error', () => reject(new Error(`${label}: cannot connect to ${url}`)),
@@ -62,9 +65,9 @@ export class Client {
 }
 
 /** Runs every check against `url`; `check(ok, what)` reports each one. */
-export async function smoke(url, check) {
-  const a = await Client.open(url, 'host');
-  const b = await Client.open(url, 'joiner');
+export async function smoke(url, check, options = {}) {
+  const a = await Client.open(url, 'host', options);
+  const b = await Client.open(url, 'joiner', options);
   try {
     const welcome = await a.hello();
     check(welcome.peer.length === 32, 'welcome carries a 128-bit peer id');
@@ -84,7 +87,7 @@ export async function smoke(url, check) {
     check(listed !== undefined, 'the game is listed');
     check(listed?.name === 'smoke game' && listed?.host === a.id, 'the listing carries name and host');
 
-    const c = await Client.open(url, 'diablo');
+    const c = await Client.open(url, 'diablo', options);
     await c.hello('DRTL');
     c.send({ type: 'list' });
     const other = (await c.recv('games')).games;
@@ -110,12 +113,12 @@ export async function smoke(url, check) {
     b.send({ type: 'nonsense' });
     check((await b.recv('error')).code === 'unknown_type', 'an unknown message type is rejected');
 
-    const d = await Client.open(url, 'rude');
+    const d = await Client.open(url, 'rude', options);
     d.send({ type: 'signal', to: a.id, data: {} });
     check((await d.recv('error')).code === 'no_hello', 'hello is required first');
     d.close();
 
-    const e = await Client.open(url, 'loud');
+    const e = await Client.open(url, 'loud', options);
     await e.hello();
     e.send({ type: 'broadcast', data: { pad: 'x'.repeat(MAX_FRAME_BYTES) } });
     check((await e.recv('error')).code === 'too_large', 'an oversized frame is rejected');
@@ -123,8 +126,8 @@ export async function smoke(url, check) {
                                        new Promise(resolve => setTimeout(resolve, 2000, false))]);
     check(closed, 'the connection closes after an oversized frame');
 
-    const asker = await Client.open(url, 'asker');
-    const master = await Client.open(url, 'master');
+    const asker = await Client.open(url, 'asker', options);
+    const master = await Client.open(url, 'master', options);
     await asker.hello('DVLX', 1, { open: true });
     await master.hello('DVLX', 1, { open: true });
     asker.send({ type: 'multicast', data: 'cXVlcnk=' });
@@ -136,11 +139,11 @@ export async function smoke(url, check) {
     asker.close();
     master.close();
 
-    const leaving = await Client.open(url, 'returning');
+    const leaving = await Client.open(url, 'returning', options);
     const first = await leaving.hello();
     leaving.close();
     await leaving.closed;
-    const returning = await Client.open(url, 'returning');
+    const returning = await Client.open(url, 'returning', options);
     const again = await returning.hello('SEXP', 1, { resume: first.resume });
     check(again.peer === first.peer, 'the token brings the same id back on a new connection');
     returning.close();

@@ -11,8 +11,9 @@
 // out-of-band datagrams each, capped (protocol.js).
 //
 // SignalServer knows nothing of the WebSocket library. A connection is
-// anything with send(text) and close(); `run` below wires `ws` to it, and the
-// tests wire a stand-in.
+// anything with send(text) and close(); `run` below wires `ws` to it, and an
+// HTTP session (http.js) for hosts that will not upgrade a connection, and
+// the tests wire a stand-in.
 //
 // Nothing here has to outlive the process. A client that loses its connection
 // reconnects, presents the resume token from its welcome to get its peer id
@@ -21,10 +22,12 @@
 // and membership -- for a grace period, so that a blip goes unnoticed by
 // everyone else (docs/signalling-protocol.md, "Reconnecting").
 
+import { createServer } from 'node:http';
 import { performance } from 'node:perf_hooks';
 
 import { WebSocketServer } from 'ws';
 
+import { HttpSessions } from './http.js';
 import { log } from './log.js';
 import * as protocol from './protocol.js';
 import { Resume } from './resume.js';
@@ -451,13 +454,33 @@ export class SignalServer {
 }
 
 /**
- * Serves `server` on host:port until close() is called on the result. Port 0
- * picks a free one; `address()` says which.
+ * Serves `server` on host:port until close() is called on the result: as
+ * WebSocket upgrades, and as HTTP sessions for clients behind a host that will
+ * not upgrade (http.js), both on the one port. Port 0 picks a free one;
+ * `address()` says which.
+ *
+ * `websocket: false` and `buffered: true` make it behave like the hosts the
+ * HTTP sessions are for -- one whose proxy will not upgrade, one whose proxy
+ * buffers responses -- so that clients can be tested against them.
  */
-export async function run(server, { host = '0.0.0.0', port = 8765, roomTtl = 30 } = {}) {
+export async function run(server, { host = '0.0.0.0', port = 8765, roomTtl = 30,
+                                    streamSeconds = 25, idleSeconds = 15,
+                                    websocket = true, buffered = false } = {}) {
+  const sessions = new HttpSessions(server, { streamSeconds, idleSeconds, buffered });
+  const http = createServer((req, res) => sessions.handle(req, res));
   // Frames are checked against MAX_FRAME_BYTES by the handler, which answers
   // with an error first. The library's own cap only has to be above it.
-  const wss = new WebSocketServer({ host, port, maxPayload: 1024 * 1024 });
+  const wss = websocket ? new WebSocketServer({ server: http, maxPayload: 1024 * 1024 })
+                        : new WebSocketServer({ noServer: true });
+  if (!websocket) {
+    // Like a proxy that does not do WebSockets: the upgrade arrives as an
+    // ordinary GET, and gets an ordinary answer.
+    http.on('upgrade', (req, socket) => {
+      const body = 'snps signalling server: HTTP only here\n';
+      socket.end(`HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n` +
+                 `Content-Length: ${body.length}\r\nConnection: close\r\n\r\n${body}`);
+    });
+  }
 
   // Pings keep NATs from forgetting the connection and find the dead ones:
   // a client that has not answered the last ping by the next is dropped.
@@ -484,6 +507,9 @@ export async function run(server, { host = '0.0.0.0', port = 8765, roomTtl = 30 
     });
     socket.on('error', error => log.debug(`socket error: ${error.message}`));
   });
+  // The listening socket's errors are http's, and reported below; ws passes
+  // them on too, and an 'error' nobody listens for would end the process.
+  wss.on('error', () => {});
   const pinger = setInterval(() => {
     for (const socket of wss.clients) {
       if (!socket.alive) {
@@ -497,14 +523,17 @@ export async function run(server, { host = '0.0.0.0', port = 8765, roomTtl = 30 
   const reaper = setInterval(() => server.expire(), (roomTtl / 3) * 1000);
 
   await new Promise((resolve, reject) => {
-    wss.once('listening', resolve);
-    wss.once('error', reject);
+    http.once('listening', resolve);
+    http.once('error', reject);
+    http.listen(port, host);
   });
-  const address = wss.address();
-  log.info(`listening on ws://${address.address}:${address.port}`);
+  const address = http.address();
+  log.info(websocket
+    ? `listening on ws://${address.address}:${address.port}, and http:// on the same port`
+    : `listening on http://${address.address}:${address.port}, refusing WebSockets${buffered ? ', buffering' : ''}`);
 
   return {
-    address: () => wss.address(),
+    address: () => http.address(),
     /**
      * Closes every connection with `code`, then stops. 1012, "service
      * restart", tells clients to come back soon; 1001, "going away", that
@@ -518,13 +547,18 @@ export async function run(server, { host = '0.0.0.0', port = 8765, roomTtl = 30 
       server.shutdown();
       for (const socket of wss.clients)
         socket.close(code, reason);
+      // HTTP sessions say the same in a close event, which ends their streams.
+      sessions.closeAll(code, reason);
       const cut = setTimeout(() => {
         for (const socket of wss.clients)
           socket.terminate();
+        http.closeAllConnections();
       }, CLOSE_TIMEOUT_MS);
       wss.close(() => {
-        clearTimeout(cut);
-        resolve();
+        http.close(() => {
+          clearTimeout(cut);
+          resolve();
+        });
       });
     }),
   };

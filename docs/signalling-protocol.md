@@ -1,7 +1,9 @@
 # The signalling protocol
 
-JSON text frames over one WebSocket per peer, held open for the whole session.
-Implemented in `server/`; see `server-side.md` for why it is shaped this way.
+JSON text frames over one connection per peer, held open for the whole session:
+a WebSocket, or, behind a host that will not upgrade one, an HTTP session
+carrying the same frames ("Over HTTP", below). Implemented in `server/`; see
+`server-side.md` for why it is shaped this way.
 
 Every frame is a JSON object with a `type`. Frames are capped at 16 KB and 30
 messages per second per connection. Anything malformed draws an `error` and
@@ -175,6 +177,58 @@ incomplete after a restart.
 of a room has to reach the same instance, since rooms live in its memory.
 Routing connections by product and version would do it. Otherwise the rooms
 would have to move to a shared store, such as Redis. Nothing needs that yet.
+
+## Over HTTP
+
+Some hosts' proxies will not upgrade a connection to a WebSocket: shared
+hosting often, SiteGround's Node.js hosting among them as far as anyone has
+found. The same port therefore also speaks the protocol over plain HTTP. An
+**HTTP session** is one connection: everything above — frames, limits, rate,
+the grace period, resume tokens — applies unchanged, because to the server it
+is just another thing with `send()` and `close()`.
+
+| Request | Answer |
+|---|---|
+| `POST …/session` | `201 {"session": ID, "stream": 25}`: a new session, ID being 32 hex digits |
+| `GET …/session/ID/events?after=N` | `text/event-stream`: the server's frames after event N |
+| `GET …/session/ID/events?after=N&poll=1` | the same as a long poll: answered as soon as there is anything, or after 25 s with nothing |
+| `POST …/session/ID` | the client's frames, one per line; `204` |
+| `POST …/session/ID/close` | the client leaves: no grace period; `204` |
+
+`…` is any path, so the server can sit under a prefix. An unknown or closed
+session is `404`, which a client treats as a connection that closed.
+
+**Events are numbered and kept until acknowledged.** Each frame is an SSE event
+with `id: N`. A client acknowledges everything up to N by asking for what
+follows it, so a stream cut short loses nothing: the next request gets back
+whatever had not arrived, then what is new.
+
+**Streams end by design.** Each stays open for `--http-stream` seconds, 25 by
+default, then ends, and the client asks again from where it got to. That keeps
+every stream under the request timeouts of whatever proxies are in between.
+While one is open the server sends a comment every 10 seconds, which keeps
+idle-connection timers from cutting it.
+
+**A proxy that buffers turns a stream into silence.** A stream opens with
+`event: ready`. A client that has not seen it within 3 seconds is behind a proxy
+that holds responses back until they end. It drops that stream and polls from
+then on: `poll=1` answers as soon as there is something, so a buffered answer
+is a short one. The server also sends `X-Accel-Buffering: no`, which turns
+nginx's buffering off where nginx honours it.
+
+**`event: close` ends a session from the server's side,** with
+`{"code": …, "reason": …}`: 1012 for a restart, 1001 for going away, 4000 for
+`replaced`, the same codes a WebSocket would get.
+
+**A client that stops asking is dropped.** A session with no stream open, and
+none asked for in 15 seconds since the last ended, is treated as a dropped
+connection: the grace period follows, as for a socket that died.
+
+**A browser on another origin needs no preflight.** Every request is a `GET` or
+a `POST` of `text/plain`, CORS's "simple" requests, and every answer carries
+`Access-Control-Allow-Origin: *`. The session ID is in the URL, not a cookie,
+so nothing ambient is shared. It is a bearer credential for the session, like
+the resume token for the peer: serve `https://`.
 
 ## Not settled
 
