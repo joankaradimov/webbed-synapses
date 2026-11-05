@@ -35,6 +35,11 @@ protocol as HTTP sessions: Server-Sent Events for what the server pushes,
 POSTs for what they send (`docs/signalling-protocol.md`, "Over HTTP").
 Nothing on the server needs switching on. On such a host:
 
+- **Give clients the `https://` url.** Given `http(s)://`, a client tries a
+  WebSocket at the same address first, and uses HTTP if that is refused; given
+  `ws(s)://` it tries nothing else. `webbed.ini`'s `signalling = http`, or
+  `Options::signalling`, skips the attempt, and with it the line a browser
+  logs for a refused WebSocket.
 - **Set `--secret`.** A host that restarts the process at will makes resume
   tokens the difference between a blip and everyone's ids changing.
 - **`--http-stream`** (default 25 seconds) is how long a stream or a long poll

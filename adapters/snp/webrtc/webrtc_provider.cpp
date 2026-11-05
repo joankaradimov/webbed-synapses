@@ -16,6 +16,10 @@
  *   - the SNPS_SERVER environment variable
  *   - webbed.ini beside the module:   [snps]  server=ws://host:port
  *   - ws://127.0.0.1:8765
+ * An http:// or https:// server is tried as a WebSocket and reached over HTTP
+ * if that is refused, for a host that will not upgrade a connection;
+ * signalling=websocket|http in the same file, or SNPS_SIGNALLING, settles it
+ * instead of finding out (snps::Signalling).
  * The same file takes  log=off|error|warning|info|debug  (default info); the
  * log is webbed.log beside the module, or in %TEMP% if that directory is not
  * writable. Both take the module's own name: a copy renamed x.snp reads x.ini.
@@ -53,8 +57,10 @@ const DWORD kProviderCount =
     static_cast<DWORD>(sizeof(snp_caps_records) / sizeof(snp_caps_records[0]));
 
 // How long Initialize waits for the signalling server before telling storm
-// the network is unavailable. Storm's menu is frozen for that long.
-constexpr auto kOnlineTimeout = std::chrono::seconds(4);
+// the network is unavailable. Storm's menu is frozen for that long. Enough
+// for the slowest way in that works: a WebSocket refused, then HTTP behind a
+// proxy that holds streams back, which takes a few seconds to notice.
+constexpr auto kOnlineTimeout = std::chrono::seconds(8);
 // Storm polls the game list about once a second [W]; asking the server more
 // often than that buys nothing.
 constexpr auto kRefreshInterval = std::chrono::milliseconds(900);
@@ -398,6 +404,12 @@ BOOL CALLBACK Initialize(SNETPROGRAMDATAPTR program, SNETPLAYERDATAPTR player,
     else
         server = iniValue("server", "ws://127.0.0.1:8765");
 
+    std::string signalling;
+    if (GetEnvironmentVariableA("SNPS_SIGNALLING", env, sizeof(env)) && *env)
+        signalling = env;
+    else
+        signalling = iniValue("signalling", "auto");
+
     readListingOptions();
     logf(snps::LogLevel::Info,
          "listing: first id %lu, extra %s, category 0x%lx, latency 0x%lx, own game %s, "
@@ -421,13 +433,20 @@ BOOL CALLBACK Initialize(SNETPROGRAMDATAPTR program, SNETPLAYERDATAPTR player,
     // how they get confirmed.
     logf(snps::LogLevel::Info,
          "initialize: %s, programid 0x%08lx (\"%s\"), versionid %lu, maxplayers %lu, "
-         "programdata %lu bytes, player \"%s\", server %s, process %s",
+         "programdata %lu bytes, player \"%s\", server %s (signalling %s), process %s",
          snp_caps_records[0].description, program->programid, product.c_str(),
          program->versionid, program->maxplayers, program->size, name.c_str(),
-         server.c_str(), program_file);
+         server.c_str(), signalling.c_str(), program_file);
 
     snps::Options options;
     options.server = server;
+    if (signalling == "websocket")
+        options.signalling = snps::Signalling::WebSocket;
+    else if (signalling == "http")
+        options.signalling = snps::Signalling::Http;
+    else if (signalling != "auto")
+        logf(snps::LogLevel::Warning, "initialize: signalling=%s is not auto, websocket or http; "
+             "taking auto", signalling.c_str());
     options.product = product.empty() ? "SNPS" : product;
     options.version = static_cast<int>(program->versionid);
     options.name = name;

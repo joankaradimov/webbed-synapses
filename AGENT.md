@@ -277,6 +277,14 @@ yet. DevilutionX has played games over the core, on x64 desktop.
 - [x] Signalling and directory server, in Node — 49 unit tests, plus 20 checks
       over a real WebSocket and a restart between two servers (`npm test` in
       `server/`). It can be restarted or replaced mid-game.
+- [x] Signalling over plain HTTP too, for hosts whose proxy will not upgrade a
+      connection, such as SiteGround's (2026-10-08): SSE down, POSTs up, long
+      polling behind a proxy that buffers (`docs/signalling-protocol.md`, "Over
+      HTTP"). Given an `https://` url, clients try a WebSocket, fall back by
+      themselves, and remember. Clients on Windows (WinHTTP) and in the browser
+      (`fetch()`); not yet native Linux or macOS. The harness, `snp-sim` and
+      the wasm test pass against a server that refuses WebSockets, and one that
+      also buffers; the browser half passed across origins.
 - [x] WebRTC stack proven for 32-bit MSVC — builds and connects
       (`tools/webrtc-probe/`, `docs/webrtc-stack.md`)
 - [x] WebRTC transport core — `core/`, with `tests/harness` (56 checks, x86 and
@@ -560,6 +568,12 @@ for a 32-bit target, so a 64-bit build of all targets works too.
 
 Next, in the order that retires the most risk:
 
+0. **The server on SiteGround.** Deploy it with `SNPS_SECRET` set, then run
+   `node tools/signal-smoke.mjs --url https://…` against it, and again with
+   `--poll`. Both should pass whatever its proxy does; if streaming fails and
+   polling passes, its proxy buffers, which clients handle by themselves.
+   Clients get the `https://` url, and `webbed.ini` can say
+   `signalling = http` once that is known.
 1. **A match played through over `webbed.snp`.** Everything before the match
    now works (above). Put the module and a `webbed.ini` beside `storm.dll`
    (`adapters/snp/webrtc/README.md`), run the signalling server where both can

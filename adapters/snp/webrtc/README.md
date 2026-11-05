@@ -27,7 +27,15 @@ log = info
 ```
 
 - `server` — the signalling server. The `SNPS_SERVER` environment variable
-  overrides it; with neither, `ws://127.0.0.1:8765`.
+  overrides it; with neither, `ws://127.0.0.1:8765`. A `ws://` or `wss://`
+  server is a WebSocket. An `http://` or `https://` one is tried as a
+  WebSocket first and reached over HTTP if that is refused — for a server on a
+  host whose proxy will not upgrade a connection, such as shared hosting
+  (`docs/signalling-protocol.md`, "Over HTTP"). HTTP goes through WinHTTP,
+  so the system's certificate store and proxy settings apply.
+- `signalling` — `auto` (the default), `websocket` or `http`, for when it is
+  known which one gets through: `http` saves the WebSocket attempt.
+  `SNPS_SIGNALLING` overrides it.
 - `log` — `off`, `error`, `warning`, `info` (the default) or `debug`. The log is
   `webbed.log` beside the module, or in `%TEMP%` if that directory is not
   writable, and every line also goes to `OutputDebugString`.
@@ -40,8 +48,10 @@ needs its `webrtc.ini` renamed to `webbed.ini`, and the old module removed:
 with both in the folder, expect the provider listed twice, as two modules
 carrying one provider record were for Direct IP (AGENT.md §9).
 
-If the server cannot be reached within four seconds, `Initialize` fails with
-`ERROR_NETWORK_UNREACHABLE` and the game says so.
+If the server cannot be reached within eight seconds, `Initialize` fails with
+`ERROR_NETWORK_UNREACHABLE` and the game says so. That is enough for the
+slowest way in that works: a WebSocket refused, then HTTP behind a proxy that
+buffers, which takes about three seconds to notice.
 
 Every player needs the same server. For two machines on one network, run it
 where both can reach it:

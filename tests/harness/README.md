@@ -37,8 +37,8 @@ refuses WebSockets the way such a proxy does, and the program is given an
 `http://` url, so its transports have to find that out and fall back to HTTP
 sessions by themselves. `--http-buffered` also holds every response back
 until it ends, as a buffering proxy does, so they have to fall back to long
-polling as well. ctest runs the harness and the wasm test in all three ways
-(`transport-harness-http`, `-http-buffered`, and so on).
+polling as well. ctest runs the harness, `snp-sim` and the wasm test in all
+three ways (`transport-harness-http`, `-http-buffered`, and so on).
 
 The harness covers the StarCraft way of meeting:
 - coming online, advertising and listing;
