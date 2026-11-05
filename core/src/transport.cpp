@@ -29,10 +29,14 @@
 
 #include "snps/transport.hpp"
 
+#include "http_client.hpp"
+#include "signalling.hpp"
+
 #include <rtc/rtc.hpp>
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <condition_variable>
 #include <cstring>
 #include <deque>
@@ -83,15 +87,10 @@ constexpr auto kStableConnection = 10s;
 // own that can run up to kReconnectMost behind ours.
 constexpr auto kRejoinInterval = 3s;
 constexpr auto kRejoinPatience = 60s;
-#ifndef __EMSCRIPTEN__
-// Natively, the WebSocket pings after this much silence from the server, and
-// gives up after this many pings go unanswered. So a server that vanished
-// without closing anything -- a machine that lost power, a NAT that forgot the
-// connection -- is noticed within half a minute. A browser's WebSocket cannot
-// ping, and notices only when TCP does.
-constexpr auto kServerPingInterval = 10s;
-constexpr int kServerPingsUnanswered = 2;
-#endif
+// Given an http:// or https:// server, the transport tries a WebSocket first,
+// and settles for HTTP if that has not been welcomed in this long: refused
+// outright by a proxy that will not upgrade, which is quick, or left hanging.
+constexpr auto kWebSocketTrial = 3s;
 
 // ---- Logging ---------------------------------------------------------------
 
@@ -259,6 +258,42 @@ long long milliseconds(Clock::duration duration) {
         std::chrono::duration_cast<std::chrono::milliseconds>(duration).count());
 }
 
+// Where, and how, the next signalling connection goes.
+struct Route {
+    std::string url;
+    bool http = false;
+    bool trial = false;  // a WebSocket that, refused, means HTTP from then on
+};
+
+// `httpChosen`: an Auto transport found that WebSockets do not get through.
+// `websocketProven`: one was welcomed, so a later failure is just a failure.
+Route routeFor(const std::string& server, Signalling mode, bool httpChosen,
+               bool websocketProven) {
+    const auto colon = server.find("://");
+    if (colon == std::string::npos)
+        return {server, mode == Signalling::Http, false};  // let it fail, and say why
+    std::string scheme = server.substr(0, colon);
+    std::transform(scheme.begin(), scheme.end(), scheme.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const std::string rest = server.substr(colon);
+    const bool secure = scheme == "wss" || scheme == "https";
+    const std::string ws = (secure ? "wss" : "ws") + rest;
+    const std::string http = (secure ? "https" : "http") + rest;
+    switch (mode) {
+    case Signalling::WebSocket:
+        return {ws, false, false};
+    case Signalling::Http:
+        return {http, true, false};
+    case Signalling::Auto:
+        break;
+    }
+    if (scheme != "http" && scheme != "https")
+        return {ws, false, false};  // a ws:// url is a decision already made
+    if (httpChosen)
+        return {http, true, false};
+    return {ws, false, !websocketProven};
+}
+
 } // namespace
 
 std::string toHex(const PeerId& id) {
@@ -344,11 +379,17 @@ struct Transport::Impl : std::enable_shared_from_this<Transport::Impl> {
     std::string error;
     std::optional<PeerId> self;
     std::vector<rtc::IceServer> iceServers;
-    std::shared_ptr<rtc::WebSocket> socket;
+    std::shared_ptr<detail::SignallingConnection> socket;
 
     // -- the signalling connection, and getting it back
     std::uint64_t generation = 0;  // the current socket's; older sockets' callbacks are ignored
-    std::vector<std::shared_ptr<rtc::WebSocket>> deadSockets;  // closed, awaiting destruction
+    std::vector<std::shared_ptr<detail::SignallingConnection>> deadSockets;  // closed, awaiting destruction
+    // Which kind gets through, for an Auto transport given an http(s) server:
+    // learnt once, from the first WebSocket that is welcomed or is not.
+    bool httpChosen = false;
+    bool websocketProven = false;
+    bool httpPoll = false;  // and something in between buffers HTTP streams
+    std::optional<Clock::time_point> trialUntil;  // the current socket is a WebSocket on trial
     bool everOnline = false;       // after the first welcome, a lost connection is retried
     std::string resumeToken;       // from the last welcome: our peer id, signed by the server
     std::optional<Clock::time_point> onlineSince;
@@ -396,6 +437,7 @@ struct Transport::Impl : std::enable_shared_from_this<Transport::Impl> {
     void onSignal(const PeerId& from, const json& data);
     void onServerClosed(std::uint64_t gen, const std::string& why);  // retries, once welcomed
     void giveUp(std::uint64_t gen, const std::string& why);          // never retries
+    bool trialFailed(std::uint64_t gen, const std::string& why);     // call with mutex held
 
     // -- peers
     std::shared_ptr<rtc::PeerConnection> makePeerConnection(const std::shared_ptr<Link>& link);
@@ -443,27 +485,45 @@ void Transport::Impl::start() {
 
 // Opens a signalling connection: the first, or a replacement for one lost.
 void Transport::Impl::connect() {
-#ifndef __EMSCRIPTEN__
-    rtc::WebSocketConfiguration config;
-    config.pingInterval = kServerPingInterval;
-    config.maxOutstandingPings = kServerPingsUnanswered;
-    auto ws = std::make_shared<rtc::WebSocket>(config);
-#else
-    auto ws = std::make_shared<rtc::WebSocket>();
-#endif
+    Route route;
+    std::shared_ptr<detail::SignallingConnection> connection;
     std::uint64_t gen = 0;
+    bool poll = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (stopping)
+            return;
+        route = routeFor(options.server, options.signalling, httpChosen, websocketProven);
+        poll = httpPoll;
+    }
+    connection = route.http ? detail::makeHttpConnection(poll) : detail::makeWebSocketConnection();
+    if (!connection) {
+        std::uint64_t current = 0;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            current = generation;
+        }
+        giveUp(current, "the signalling server is reached over HTTP here, and this build has "
+                        "no HTTP client; only WebSocket servers are reachable from it");
+        return;
+    }
     {
         std::lock_guard<std::mutex> lock(mutex);
         if (stopping)
             return;
         gen = ++generation;
-        socket = ws;
+        socket = connection;
         reconnectAt.reset();
+        if (route.trial)
+            trialUntil = Clock::now() + kWebSocketTrial;
+        else
+            trialUntil.reset();
     }
 
     std::weak_ptr<Impl> weak = shared_from_this();
+    detail::SignallingConnection::Callbacks callbacks;
 
-    ws->onOpen([weak, gen] {
+    callbacks.opened = [weak, gen] {
         auto impl = weak.lock();
         if (!impl)
             return;
@@ -484,31 +544,30 @@ void Transport::Impl::connect() {
         info(hello.contains("resume") ? "signalling connected, asking for our peer id back"
                                       : "signalling connected, saying hello");
         impl->sendToServer(hello);
-    });
-    ws->onMessage([](rtc::binary) {},
-                  [weak, gen](std::string text) {
-                      if (auto impl = weak.lock())
-                          impl->onServerMessage(gen, text);
-                  });
-    ws->onError([weak, gen](std::string what) {
+    };
+    callbacks.message = [weak, gen](const std::string& text) {
         if (auto impl = weak.lock())
-            impl->onServerClosed(gen, "signalling error: " + what);
-    });
-    ws->onClosed([weak, gen] {
+            impl->onServerMessage(gen, text);
+    };
+    callbacks.closed = [weak, gen](const std::string& why) {
         if (auto impl = weak.lock())
-            impl->onServerClosed(gen, "signalling connection closed");
-    });
+            impl->onServerClosed(gen, why);
+    };
+    callbacks.note = [](const std::string& what) { info(what); };
+    callbacks.buffered = [weak] {
+        // Learnt once: the connections after this one poll from the start.
+        if (auto impl = weak.lock()) {
+            std::lock_guard<std::mutex> lock(impl->mutex);
+            impl->httpPoll = true;
+        }
+    };
 
-    info("connecting to " + options.server);
-    try {
-        ws->open(options.server);
-    } catch (const std::exception& e) {
-        onServerClosed(gen, std::string("cannot open signalling connection: ") + e.what());
-    }
+    info("connecting to " + route.url + (route.http ? ", over HTTP" : ""));
+    connection->open(route.url, std::move(callbacks));
 }
 
 void Transport::Impl::stop() {
-    std::vector<std::shared_ptr<rtc::WebSocket>> sockets;
+    std::vector<std::shared_ptr<detail::SignallingConnection>> sockets;
     std::vector<std::shared_ptr<Link>> dead;
     std::thread thread;
     {
@@ -575,12 +634,19 @@ void Transport::Impl::tick() {
     std::optional<std::string> rejoin;
     bool reconnect = false;
     std::vector<std::shared_ptr<Link>> dead;
-    std::vector<std::shared_ptr<rtc::WebSocket>> deadWs;
+    std::vector<std::shared_ptr<detail::SignallingConnection>> deadWs;
+    std::shared_ptr<detail::SignallingConnection> current;
     {
         std::lock_guard<std::mutex> lock(mutex);
         if (stopping || (lastTick && now - *lastTick < kTickInterval))
             return;
         lastTick = now;
+
+        // A WebSocket on trial that has not been welcomed by now never will be.
+        if (trialUntil && socket && now >= *trialUntil &&
+            trialFailed(generation, "no welcome over a WebSocket in " +
+                                        std::to_string(milliseconds(kWebSocketTrial)) + " ms"))
+            reconnect = true;
 
         if (status == Status::Online && advert && now - advertSent >= kAdvertInterval) {
             refresh = advert;
@@ -604,6 +670,7 @@ void Transport::Impl::tick() {
             reconnectAt.reset();
             reconnect = true;
         }
+        current = socket;
 
         for (auto it = links.begin(); it != links.end();) {
             const auto& link = it->second;
@@ -628,6 +695,8 @@ void Transport::Impl::tick() {
         deadWs.swap(deadSockets);
     }
 
+    if (current)
+        current->tick();
     if (reconnect)
         connect();
     if (refresh)
@@ -646,7 +715,7 @@ void Transport::Impl::tick() {
 // ---- Signalling ------------------------------------------------------------
 
 void Transport::Impl::sendToServer(const json& message) {
-    std::shared_ptr<rtc::WebSocket> ws;
+    std::shared_ptr<detail::SignallingConnection> ws;
     {
         std::lock_guard<std::mutex> lock(mutex);
         ws = socket;
@@ -669,10 +738,23 @@ void Transport::Impl::sendSignal(const PeerId& to, json data) {
 // final, and the host decides what to do about it; after, it is retried.
 void Transport::Impl::onServerClosed(std::uint64_t gen, const std::string& why) {
     std::optional<Clock::duration> retry;
+    bool fallBack = false;
     {
         std::lock_guard<std::mutex> lock(mutex);
         if (stopping || gen != generation || !socket)
             return;  // stopping, or a socket already let go of
+        // A WebSocket on trial that closes unwelcomed is not a failure: it is
+        // the answer to whether WebSockets get through.
+        fallBack = trialFailed(gen, why);
+    }
+    if (fallBack) {
+        connect();
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (stopping || gen != generation || !socket)
+            return;
         deadSockets.push_back(std::move(socket));
         error = why;
         if (everOnline) {
@@ -689,6 +771,20 @@ void Transport::Impl::onServerClosed(std::uint64_t gen, const std::string& why) 
     }
     warn(retry ? why + "; reconnecting in " + std::to_string(milliseconds(*retry)) + " ms" : why);
     changed.notify_all();
+}
+
+// The WebSocket on trial will not do: HTTP from now on, at once, and not
+// counted as a failure. False if there was no trial. Call with mutex held,
+// and connect() after releasing it if this says so.
+bool Transport::Impl::trialFailed(std::uint64_t gen, const std::string& why) {
+    if (!trialUntil || gen != generation || !socket)
+        return false;
+    trialUntil.reset();
+    deadSockets.push_back(std::move(socket));
+    httpChosen = true;
+    info("no WebSocket gets through to " + options.server + " (" + why +
+         "); over HTTP from now on");
+    return true;
 }
 
 // Lets the signalling connection go for good: the server will not have us.
@@ -837,6 +933,11 @@ void Transport::Impl::onWelcome(std::uint64_t gen, const json& message) {
         error.clear();
         everOnline = true;
         onlineSince = now;
+        if (trialUntil) {
+            // A WebSocket was welcomed: they get through, and stay the way.
+            trialUntil.reset();
+            websocketProven = true;
+        }
         resumeToken = message.value("resume", "");
         if (advert) {
             pending = advert;
@@ -1524,6 +1625,9 @@ void shutdown() {
     std::lock_guard<std::mutex> lock(g_initMutex);
     if (g_initCount == 0 || --g_initCount > 0)
         return;
+    // The HTTP client's workers too: a module about to unload must not leave
+    // a thread of its own running.
+    detail::http::shutdown();
     rtc::Cleanup().wait();
 }
 

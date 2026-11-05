@@ -595,6 +595,22 @@ Next, in the order that retires the most risk:
 
 Loose ends, smaller than any of those:
 
+- **Native `wss://` does not check the server's certificate.** libdatachannel's
+  Mbed TLS client sets `MBEDTLS_SSL_VERIFY_OPTIONAL` and loads no CA chain
+  (`src/impl/tlstransport.cpp:342` in v0.24.5), so it is encrypted but would
+  talk to anyone. The browser checks; so does the HTTP form on Windows, which is
+  WinHTTP's. The resume token is a bearer credential, so this matters once a
+  server is public.
+- **HTTP signalling on native Linux and macOS.** The core's HTTP form is written
+  once, over a request-and-streamed-body primitive per platform
+  (`core/src/http_client.hpp`); only Windows and the browser have one. Another
+  is a file beside them — HTTP/1.1 over a socket and the Mbed TLS already
+  linked, which would also need certificates loaded, or libcurl — and the
+  harness's `--http` modes test it as they stand.
+- **A browser logs the WebSocket attempt.** Given an `https://` url on a host
+  that refuses upgrades, each transport's first try is refused, and browsers
+  log a failed WebSocket for that, unasked. `Signalling::Http` skips the try.
+
 - **The server refuses a new host inside an existing room.** After the desync
   above, each side played on alone. Storm on the joining side, now owner of its
   half, started advertising it. The server refused with `already_joined`

@@ -58,8 +58,24 @@ enum class Channel : std::uint8_t {
 // answers, and not to carry a game.
 constexpr std::size_t kMaxServerDatagram = 1024;
 
+// How the signalling connection travels (docs/signalling-protocol.md).
+enum class Signalling {
+    // A ws:// or wss:// server is a WebSocket. An http:// or https:// one is
+    // tried as a WebSocket first and reached over HTTP -- the server pushing
+    // by Server-Sent Events, frames POSTed -- if that is refused: for a host
+    // whose proxy will not upgrade a connection. The answer holds for the
+    // transport's lifetime, reconnects included.
+    Auto,
+    WebSocket,  // always, whatever the scheme
+    Http,       // always, whatever the scheme; Offline where the build has no
+                // HTTP client, which is so far everywhere but Windows and the
+                // browser (core/README.md)
+};
+
 struct Options {
-    std::string server;         // ws://host:port of the signalling server
+    std::string server;         // the signalling server: ws(s)://host:port, or
+                                // http(s)://host[:port][/path]; see Signalling
+    Signalling  signalling = Signalling::Auto;
     std::string product;        // four characters, e.g. "SEXP"; scopes the directory
     int         version = 0;    // scopes the directory too
     std::string name;           // player name, informational

@@ -15,6 +15,14 @@ Use WebSocket. It works in the browser, and `libdatachannel` and
 is write-once across native and wasm. This is the concrete reason to leave
 `NO_WEBSOCKET=OFF` when trimming dependencies.
 
+Where a host will not upgrade a connection — shared hosting, often — the same
+server speaks the same protocol over plain HTTP: Server-Sent Events for what
+it pushes, POSTs for what clients send, long polling when a proxy buffers
+(`signalling-protocol.md`, "Over HTTP"). Clients find out by themselves when
+given an `https://` url. That client is not write-once: the browser's is
+`fetch()`, Windows' is WinHTTP, and other platforms need one of their own
+(`core/README.md`).
+
 ## 2. STUN — effectively mandatory, nearly free
 
 Stateless, tiny, tells a peer its own public address so ICE can work. Public

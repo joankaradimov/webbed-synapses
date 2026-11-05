@@ -32,6 +32,14 @@ it keeps running: a server that dies is replaced, that many seconds later, by
 a new one on the same port. Every server a run starts gets the same
 `--secret`, so a replacement honours its predecessor's resume tokens.
 
+`--http` plays a host whose proxy will not upgrade a connection: the server
+refuses WebSockets the way such a proxy does, and the program is given an
+`http://` url, so its transports have to find that out and fall back to HTTP
+sessions by themselves. `--http-buffered` also holds every response back
+until it ends, as a buffering proxy does, so they have to fall back to long
+polling as well. ctest runs the harness and the wasm test in all three ways
+(`transport-harness-http`, `-http-buffered`, and so on).
+
 The harness covers the StarCraft way of meeting:
 - coming online, advertising and listing;
 - datagrams sent before a connection exists, and the reply path;

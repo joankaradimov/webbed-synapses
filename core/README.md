@@ -68,7 +68,7 @@ and `docs/webrtc-stack.md`.
 ## What is here
 
 `snps/transport.hpp` is the whole interface: a `Transport` per player, holding
-one WebSocket to the signalling server and one peer connection per peer, each
+one connection to the signalling server and one peer connection per peer, each
 with an unreliable/unordered and a reliable/ordered channel. No libdatachannel
 type appears in it. `snps::initialize()` / `shutdown()` wrap the stack's
 process-wide setup, and `setLogSink()` routes diagnostics to the host.
@@ -126,6 +126,21 @@ Decisions worth knowing before changing it:
   unavailable, not after a timeout. Natively the WebSocket also pings a silent
   server, so one that vanished without closing anything is noticed within half
   a minute; a browser's WebSocket cannot ping.
+- **The signalling connection is a WebSocket or HTTP, behind one interface**
+  (`src/signalling.hpp`). HTTP is for servers behind a host whose proxy will
+  not upgrade a connection: Server-Sent Events down, POSTs up, falling back to
+  long polling when something in between buffers the stream
+  (`docs/signalling-protocol.md`, "Over HTTP"). Given an `http(s)://` server,
+  the transport tries a WebSocket first and settles for HTTP if it is not
+  welcomed in 3 s, then keeps that answer, and the buffering one, for its
+  lifetime; `Options::signalling` decides instead. The HTTP protocol is
+  written once (`src/signalling_http.cpp`) over a primitive that each platform
+  provides (`src/http_client.hpp`): **WinHTTP on Windows**, which verifies
+  certificates against the system store and follows its proxy settings, and
+  **`fetch()` in the browser**. Nowhere else has one yet, so a native
+  Linux or macOS build reaches WebSocket servers only. Enabling it there is a
+  file beside those two: HTTP/1.1 over a socket and the Mbed TLS already
+  linked, or libcurl.
 - **No time point means "never".** `steady_clock` counts from boot natively
   but from page load in a browser. A zero time point is not "long ago" there,
   so "not yet" is a `std::optional`.

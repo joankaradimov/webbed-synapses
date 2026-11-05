@@ -25,4 +25,13 @@ if(SNPS_CAN_RUN_SERVER)
     COMMAND "${SNPS_NODE}" "${SNPS_RUN_WITH_SERVER}" --respawn 2
             "$<TARGET_FILE:snps-wasm-test>")
   set_tests_properties(wasm-server-path PROPERTIES TIMEOUT 120)
+
+  # Over fetch(), behind a host that will not upgrade, and one that buffers:
+  # see tests/harness/CMakeLists.txt.
+  foreach(mode http http-buffered)
+    add_test(NAME wasm-server-path-${mode}
+      COMMAND "${SNPS_NODE}" "${SNPS_RUN_WITH_SERVER}" --respawn 2 --${mode}
+              "$<TARGET_FILE:snps-wasm-test>")
+    set_tests_properties(wasm-server-path-${mode} PROPERTIES TIMEOUT 120)
+  endforeach()
 endif()

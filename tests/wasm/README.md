@@ -59,6 +59,19 @@ uncaught error or abort counts as a failure. `--stun` hands the peers a STUN
 server, which exercises peer connections made with ICE servers. The address
 need not answer: host candidates still connect on one machine.
 
+`--http` and `--http-buffered` do what they do for `run.mjs`: the page and the
+echo peer are given an `http://` url and have to fall back to HTTP sessions,
+and to long polling. The page is served from another port than the server,
+so it is the browser's `fetch()` across origins — CORS, which Node does not
+check. The console then shows one "WebSocket connection … failed" per
+transport: the attempt that found WebSockets refused, which a browser always
+logs. `Signalling::Http` skips it.
+
+Passed with `--http-buffered` on 2026-10-08, in the same browser pane: 13
+checks, the echo peer and the page both going WebSocket, then HTTP, then long
+polling, and both back as themselves after the server restart. Nothing in the
+console about CORS.
+
 Passed on 2026-09-27: Chromium in the Claude desktop app's browser pane,
 against `snps-echo` built with MSVC x86, with and without `--stun`. Passed
 again on 2026-10-01 with the server restart and the early destruction (13

@@ -1,11 +1,18 @@
 #!/usr/bin/env node
 // Start a signalling server and run a program against it.
 //
-//     node tests/harness/run.mjs [--respawn SECONDS] path/to/program [args...]
+//     node tests/harness/run.mjs [--respawn SECONDS] [--http | --http-buffered]
+//                                path/to/program [args...]
 //
 // The program is run as `program --server ws://127.0.0.1:<port> args...`; the
 // harness, snp-sim and the wasm test all take that, a .mjs or .js under this
 // same Node. Exits with the program's status.
+//
+// --http plays a host whose proxy will not upgrade a connection: the server
+// refuses WebSockets, and the program is given an http:// url instead, so it
+// has to find that out and fall back to HTTP sessions by itself.
+// --http-buffered also holds every response back until it ends, as a proxy
+// that buffers does, so the program has to fall back to long polling too.
 // The server's log is shown only on failure, since that is when it is worth
 // reading.
 //
@@ -24,18 +31,28 @@ import { resolve } from 'node:path';
 import { serverMissing, startServer } from './signal-server.mjs';
 
 const usage = () => {
-  process.stderr.write('usage: node tests/harness/run.mjs [--respawn SECONDS] path/to/program [args...]\n');
+  process.stderr.write('usage: node tests/harness/run.mjs [--respawn SECONDS] [--http | --http-buffered] ' +
+                       'path/to/program [args...]\n');
   process.exit(2);
 };
 
 const argv = process.argv.slice(2);
 let respawn = null;
+let mode = [];
+let scheme = 'ws';
 while (argv[0]?.startsWith('--')) {
   const option = argv.shift();
-  if (option === '--respawn' && argv.length && Number.isFinite(Number(argv[0])))
+  if (option === '--respawn' && argv.length && Number.isFinite(Number(argv[0]))) {
     respawn = Number(argv.shift());
-  else
+  } else if (option === '--http') {
+    mode = ['--no-websocket'];
+    scheme = 'http';
+  } else if (option === '--http-buffered') {
+    mode = ['--no-websocket', '--http-buffered'];
+    scheme = 'http';
+  } else {
     usage();
+  }
 }
 const [target, ...extra] = argv;
 if (!target)
@@ -51,12 +68,12 @@ if (missing) {
 
 // The same for every server this run starts, so that a replacement honours
 // the resume tokens its predecessor issued.
-const secret = ['--secret', randomBytes(16).toString('hex')];
+const secret = ['--secret', randomBytes(16).toString('hex'), ...mode];
 const lines = [];
 
 let server;
 try {
-  server = await startServer({ extra: secret, lines });
+  server = await startServer({ extra: secret, lines, scheme });
 } catch (error) {
   process.stderr.write(`${error.message}\n`);
   process.exit(1);
@@ -77,7 +94,7 @@ async function keepServing() {
     if (stopping)
       return;
     try {
-      server = await startServer({ port: server.port, extra: secret, lines });
+      server = await startServer({ port: server.port, extra: secret, lines, scheme });
     } catch (error) {
       lines.push(`--- run.mjs: ${error.message} ---`);
       return;

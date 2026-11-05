@@ -20,7 +20,28 @@ set_target_properties(snps_core PROPERTIES
 # The WebRTC transport itself. Off in the layout-only build, which has no use
 # for libdatachannel and no business fetching it.
 if(SNPS_BUILD_TRANSPORT)
-  target_sources(snps_core PRIVATE src/transport.cpp)
+  target_sources(snps_core PRIVATE
+    src/transport.cpp
+    src/signalling_ws.cpp
+    src/signalling_http.cpp)
+
+  # The HTTP client under the signalling connection's HTTP form, for servers
+  # behind a host that will not upgrade to a WebSocket. One per platform; the
+  # rest have none yet, and reach WebSocket servers only (src/http_client.hpp
+  # says what a new one takes).
+  if(EMSCRIPTEN)
+    target_sources(snps_core PRIVATE src/http_client_wasm.cpp)
+    target_link_options(snps_core INTERFACE
+      "SHELL:--js-library \"${CMAKE_CURRENT_LIST_DIR}/src/http_client.js\"")
+    # A --js-library is no build tool's input; see cmake/LibDataChannel.cmake.
+    set_property(TARGET snps_core APPEND PROPERTY INTERFACE_LINK_DEPENDS
+      "${CMAKE_CURRENT_LIST_DIR}/src/http_client.js")
+  elseif(WIN32)
+    target_sources(snps_core PRIVATE src/http_client_winhttp.cpp)
+    target_link_libraries(snps_core PRIVATE winhttp)
+  else()
+    target_sources(snps_core PRIVATE src/http_client_none.cpp)
+  endif()
   # PRIVATE: no libdatachannel type appears in snps/transport.hpp, so hosts
   # compile against the core without the WebRTC headers. Static libraries
   # still propagate the link dependency.

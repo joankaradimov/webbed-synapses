@@ -230,6 +230,14 @@ a `POST` of `text/plain`, CORS's "simple" requests, and every answer carries
 so nothing ambient is shared. It is a bearer credential for the session, like
 the resume token for the peer: serve `https://`.
 
+**Which one a client uses.** The core takes the server's URL scheme as the
+answer: `ws://` and `wss://` are WebSockets. `http://` and `https://` are tried
+as a WebSocket at the same address first, and reached over HTTP if that is not
+welcomed within 3 seconds — refused, which a proxy that will not upgrade does
+at once, or left hanging. That answer holds for the transport's lifetime, and
+so does a finding that streams are buffered. `Options::signalling` settles it
+instead of finding out (`snps/transport.hpp`).
+
 ## Not settled
 
 - Authentication. There is none, deliberately, for now.

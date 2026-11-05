@@ -2,13 +2,19 @@
 // Set up the browser half of tests/wasm, then wait while a browser runs it.
 //
 //     node tests/wasm/browser.mjs <wasm build dir> <snps-echo> [--minutes 10]
-//                                 [--stun stun:host:port]
+//                                 [--stun stun:host:port] [--http | --http-buffered]
 //
 // Starts a signalling server (server/, as run.mjs does), the native echo peer
 // (tests/harness's snps-echo), and a web server for the directory holding
 // snps-wasm-test.js and test.html, then prints the page's address. Open it in
 // a browser: the page ends with "passed" or "FAILED", and its title says the
 // same. Ctrl+C stops everything.
+//
+// --http and --http-buffered play the hosts the HTTP form of signalling is
+// for, as run.mjs does: WebSockets refused, and streams held back too. The
+// page and the echo peer are given an http:// url and have to find out. The
+// page is served from another port than the server, so this is the browser's
+// fetch() across origins: CORS, which Node does not check.
 //
 // Near its end the page asks for /restart-signalling, and the signalling
 // server is killed and replaced, two seconds later, by another on the same
@@ -31,10 +37,13 @@ const { values: args, positionals } = parseArgs({
     // A STUN server for the signalling server to hand out. Any address will
     // do, to exercise peer connections made with one.
     stun: { type: 'string' },
+    http: { type: 'boolean', default: false },
+    'http-buffered': { type: 'boolean', default: false },
   },
 });
 if (positionals.length !== 2) {
-  process.stderr.write('usage: node tests/wasm/browser.mjs <wasm build dir> <snps-echo> [--minutes 10] [--stun url]\n');
+  process.stderr.write('usage: node tests/wasm/browser.mjs <wasm build dir> <snps-echo> [--minutes 10] [--stun url] ' +
+                       '[--http | --http-buffered]\n');
   process.exit(2);
 }
 const wasmDir = resolve(positionals[0]);
@@ -53,7 +62,10 @@ if (missing) {
 }
 
 // The same for both servers, so the second honours the first one's tokens.
-const serverArgs = ['--secret', randomBytes(16).toString('hex'), ...(args.stun ? ['--stun', args.stun] : [])];
+const serverArgs = ['--secret', randomBytes(16).toString('hex'), ...(args.stun ? ['--stun', args.stun] : []),
+                    ...(args.http || args['http-buffered'] ? ['--no-websocket'] : []),
+                    ...(args['http-buffered'] ? ['--http-buffered'] : [])];
+const scheme = args.http || args['http-buffered'] ? 'http' : 'ws';
 
 // The page, the program and its wasm; nothing outside the directory. And the
 // one request that is not a file: replace the signalling server.
@@ -95,7 +107,7 @@ async function restartSignalling() {
   if (stopping)
     return;
   try {
-    signalling = await startServer({ port, log, extra: serverArgs });
+    signalling = await startServer({ port, log, extra: serverArgs, scheme });
     console.log(`signalling server back on port ${port}`);
   } catch (error) {
     console.log(`the signalling server did not come back: ${error.message}`);
@@ -103,7 +115,7 @@ async function restartSignalling() {
 }
 
 try {
-  signalling = await startServer({ log, extra: serverArgs });
+  signalling = await startServer({ log, extra: serverArgs, scheme });
   echo = spawn(echoPath, ['--server', signalling.url, '--seconds', String(Math.round(minutes * 60))],
                { stdio: ['ignore', 'pipe', 'inherit'] });
   const echoed = new Promise(done => echo.once('exit', done));

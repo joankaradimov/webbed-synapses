@@ -27,7 +27,8 @@ export function serverMissing() {
  * either way -- pass the same array to several servers to keep one log of
  * all of them. Resolves once it is listening.
  */
-export function startServer({ port = 0, extra = [], log = null, lines = [], timeoutMs = 10_000 } = {}) {
+export function startServer({ port = 0, extra = [], log = null, lines = [], timeoutMs = 10_000,
+                              scheme = 'ws' } = {}) {
   const child = spawn(process.execPath,
                       [SERVER, '--host', '127.0.0.1', '--port', String(port), '--verbose', ...extra],
                       { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -45,7 +46,7 @@ export function startServer({ port = 0, extra = [], log = null, lines = [], time
       lines.push(line.replace(/\r$/, ''));
       if (lines.length > KEEP_LINES)
         lines.shift();
-      const match = /listening on ws:\/\/[^\s]+:(\d+)/.exec(line);
+      const match = /listening on (?:ws|http):\/\/[^\s,]+:(\d+)/.exec(line);
       if (match)
         announce?.(Number(match[1]));
     }
@@ -72,7 +73,7 @@ export function startServer({ port = 0, extra = [], log = null, lines = [], time
       clearTimeout(timer);
       announce = null;
       resolve({
-        url: `ws://127.0.0.1:${listening}`,
+        url: `${scheme}://127.0.0.1:${listening}`,
         port: listening,
         pid: child.pid,
         exited,
